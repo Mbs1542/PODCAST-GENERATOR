@@ -75,11 +75,11 @@ class ProductionGuardian:
                 # Re-validate including the regenerated assets
                 valid_images = self._validate_images(valid_images + regenerated)
 
-        # If no visuals survived, inject a high-quality placeholder to prevent grey/blank video
+        # If no visuals survived, fail fast instead of injecting placeholders
         if not valid_images and not video_assets:
-            placeholder = self._generate_placeholder(metadata or {}, visuals_dir)
-            if placeholder:
-                valid_images = [placeholder]
+            msg = "No valid visual assets after validation (images/videos missing or corrupt)."
+            self.logger.error(msg)
+            raise RuntimeError(msg)
 
         adaptive = False
         if len(valid_images) < max(1, expected_images):

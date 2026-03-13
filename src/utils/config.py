@@ -37,6 +37,7 @@ class Settings:
     )
     default_voice_profile: str = field(default_factory=lambda: os.getenv("VOICE_PROFILES_DEFAULT", "classic"))
     target_language: str = field(default_factory=lambda: os.getenv("TARGET_LANGUAGE", ""))
+    visual_text_language: str = field(default_factory=lambda: os.getenv("VISUAL_TEXT_LANGUAGE", "en"))
 
     monthly_tts_character_limit: int = field(default_factory=lambda: int(os.getenv("MONTHLY_TTS_CHARACTER_LIMIT", "500000")))
     monthly_openai_cost_limit: float = field(default_factory=lambda: float(os.getenv("MONTHLY_OPENAI_COST_LIMIT", "200.0")))
@@ -133,6 +134,12 @@ class Settings:
     output_mode: str = field(default_factory=lambda: "video_audio")
     include_visuals: bool = field(default_factory=lambda: True)
     preview_mode: bool = field(default_factory=lambda: _to_bool(os.getenv("PREVIEW_MODE"), False))
+    enable_ai_quality_enhancement: bool = field(
+        default_factory=lambda: _to_bool(os.getenv("ENABLE_AI_QUALITY_ENHANCEMENT"), False)
+    )
+    auto_apply_ai_fixes: bool = field(
+        default_factory=lambda: _to_bool(os.getenv("AUTO_APPLY_AI_FIXES"), False)
+    )
     
     def __post_init__(self) -> None:
         if not self.openai_endpoint or not self.openai_api_key or not self.openai_deployment:
@@ -176,6 +183,9 @@ class Settings:
             google_cloud_project=os.getenv("GOOGLE_CLOUD_PROJECT"),
             google_cloud_location=os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"),
             target_language=os.getenv("TARGET_LANGUAGE", ""),
+            visual_text_language=os.getenv("VISUAL_TEXT_LANGUAGE", "en"),
+            enable_ai_quality_enhancement=_to_bool(os.getenv("ENABLE_AI_QUALITY_ENHANCEMENT"), False),
+            auto_apply_ai_fixes=_to_bool(os.getenv("AUTO_APPLY_AI_FIXES"), False),
         )
 
     def _load_ui_preferences(self) -> None:

@@ -29,6 +29,10 @@ APP_BUILD_DATE = "2025-12-27"
 APP_DISPLAY_NAME = "M.B.S Studio"
 """The display name shown in window titles and UI elements."""
 
+# Shared QSettings identity
+QSETTINGS_ORG = "M.B.S Studio"
+QSETTINGS_APP = "Podcast Generator"
+
 APP_ASSISTANT_NAME = "M.B.S"
 """The name used for the AI assistant in chat conversations."""
 

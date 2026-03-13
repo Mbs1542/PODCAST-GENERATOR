@@ -7,15 +7,19 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 import sys
+import time
 from typing import Dict, List
 
+import numpy as np
+from moviepy.editor import ColorClip, ImageClip
+from PIL import Image, ImageDraw, ImageFont
 from openai import APIError, APITimeoutError, AzureOpenAI, RateLimitError
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 from ..utils import RunPaths, Settings, get_logger
 
 
-HEBREW_FONT = "Arial"  # Default Hebrew-compatible font for generated scenes
+HEBREW_FONT = "Arial Unicode MS"  # Default Hebrew-compatible font for generated scenes (fallback to Arial if not available)
 AZURE = "#1E6DE0"
 CONCRETE_WHITE = "#F4F5F7"
 SOFT_TEAL = "#4DC1B6"
@@ -83,11 +87,12 @@ You are a Manim expert. Write a Python script using Manim Community v0.18.
 - Motion: every element enters ONLY with Create/Write/FadeInFrom (no bare add anywhere); include a subtle background float/pulse (e.g., Rectangle or VGroup oscillating 3-5px up/down over 6s) with rate_func=smootherstep so something always moves softly during dialogue.
 - Do NOT use self.camera.frame; instead move mobjects/background layers for camera-like motion to stay compatible with v0.18.
 - Include a module-level constant HEBREW_FONT = "{HEBREW_FONT}" and use it for all Text/Paragraph fonts; also constants AZURE, CONCRETE_WHITE, SOFT_TEAL.
-- Add an rtl(text: str) helper that uses arabic_reshaper.reshape + bidi.get_display (call get_display(reshape(text))) to render Hebrew RTL safely; every displayed string must pass through rtl(...). Align text RIGHT. Use Assistant or Sans-Serif font variants when available.
+- Add an rtl(text: str) helper that uses arabic_reshaper.reshape + bidi.get_display (call get_display(reshape(text))) to render Hebrew RTL safely; every displayed string must pass through rtl(...). Align text RIGHT. Prefer "Arial Unicode MS" or "Arial" for Hebrew support.
 - Background requirement: use a lightly tinted backdrop (CONCRETE_WHITE with subtle opacity) so there are no black/blank frames; avoid transparent backgrounds.
-- RTL requirement: All Hebrew text must flow through get_display(reshape(text)) before rendering.
-- Text requirement: Use Text with a Hebrew-capable font (e.g., font="Assistant" or font="Sans-Serif") for all text objects.
-- All Text/Paragraph instances must set font=HEBREW_FONT, color=AZURE or SOFT_TEAL for accents, and wrap the string with rtl(...).
+- RTL requirement: All Hebrew text must flow through get_display(reshape(text)) before rendering. Use Text with direction="rtl" parameter if available in Manim version.
+- Text requirement: Use Text with a Hebrew-capable font (e.g., font="Arial Unicode MS", font="Arial", or font="Sans-Serif") for all text objects. Ensure font parameter is explicitly set.
+- All Text/Paragraph instances must set font=HEBREW_FONT, color=AZURE or SOFT_TEAL for accents, and wrap the string with rtl(...). Test that Hebrew characters render correctly.
+- Layout safety: after building the scene, collect foreground mobjects into a VGroup, scale down if width/height exceed 95% of config.frame_width/height (uniform scale), then move_to(ORIGIN) to keep everything on frame.
 - Scene safety: begin construct() with self.wait(1.5) and end with self.wait(1.5) to avoid blank frames; include at least one additional self.wait() during the sequence.
 - Use frame dimensions via config.frame_width and config.frame_height (or define these values explicitly in the script) instead of relying on global FRAME_WIDTH/FRAME_HEIGHT constants.
 - Append a comment line "# END OF SCENE" at the very end of the file to confirm code completion.
@@ -141,11 +146,17 @@ You are a Manim expert. Write a Python script using Manim Community v0.18.
                 continue
 
             output_file = f"{class_name}.mp4"
-            expected_output = media_dir / "videos" / class_name / "720p30" / output_file
+            expected_output = media_dir / "videos" / class_name / "1080p30" / output_file
             expected_output.parent.mkdir(parents=True, exist_ok=True)
 
             cmd = base_cmd + [
-                "-qm",
+                "-qk",
+                "-r",
+                "1920,1080",
+                "--fps",
+                "30",
+                "--format",
+                "mp4",
                 "--media_dir",
                 str(media_dir),
                 "-o",
@@ -156,26 +167,77 @@ You are a Manim expert. Write a Python script using Manim Community v0.18.
 
             self.logger.info("Rendering %s -> %s", scene_file.name, expected_output)
             try:
-                subprocess.run(cmd, check=True)
+                result = subprocess.run(cmd, check=True, capture_output=True, text=True)
             except FileNotFoundError as exc:
                 self.logger.error("Manim executable not found: %s", exc)
                 raise RuntimeError("Manim executable not found during render") from exc
             except subprocess.CalledProcessError as exc:
-                self.logger.error("Manim failed for %s: %s", scene_file.name, exc)
+                self.logger.error(
+                    "Manim failed for %s (code=%s): %s\nstdout: %s\nstderr: %s",
+                    scene_file.name,
+                    exc.returncode,
+                    exc,
+                    exc.stdout,
+                    exc.stderr,
+                )
+                fallback = self._write_fallback_video(expected_output, label=class_name)
+                if fallback:
+                    outputs.append(expected_output)
                 continue
 
             scene_output = expected_output
             if not scene_output.exists():
                 self.logger.error("Expected Manim output missing: %s", scene_output)
+                fallback = self._write_fallback_video(scene_output, label=class_name)
+                if fallback:
+                    outputs.append(scene_output)
                 continue
 
             try:
                 self.validate_scene_output(scene_output)
             except Exception as exc:
-                self.logger.error("Scene validation failed for %s: %s", scene_file.name, exc)
+                self.logger.error("Scene validation failed for %s: %s", scene_file.name, exc, exc_info=True)
+                fallback = self._write_fallback_video(scene_output, label=f"{class_name}-fallback")
+                if fallback:
+                    outputs.append(scene_output)
                 continue
 
             outputs.append(scene_output)
+
+            # region agent log
+            try:
+                log_path = Path(r"c:\Users\maorb\OneDrive\Desktop\PODCAST GENERATOR\.cursor\debug.log")
+                mean_luma = None
+                try:
+                    cv2 = self._load_cv2()
+                    if cv2 is not None:
+                        cap = cv2.VideoCapture(str(scene_output))
+                        ok, frame = cap.read()
+                        if ok and frame is not None:
+                            mean_luma = float(frame.mean())
+                        cap.release()
+                except Exception:
+                    pass
+                payload = {
+                    "sessionId": "debug-session",
+                    "runId": "pre-fix",
+                    "hypothesisId": "H1-manim-blank",
+                    "location": "manim_generator.py:render_scenes",
+                    "message": "manim_scene_output",
+                    "data": {
+                        "scene": scene_file.name,
+                        "output": str(scene_output),
+                        "exists": scene_output.exists(),
+                        "size_bytes": scene_output.stat().st_size if scene_output.exists() else 0,
+                        "mean_luma": mean_luma,
+                    },
+                    "timestamp": int(time.time() * 1000),
+                }
+                with open(log_path, "a", encoding="utf-8") as f:
+                    f.write(json.dumps(payload) + "\n")
+            except Exception:
+                pass
+            # endregion
 
         return outputs
 
@@ -208,12 +270,56 @@ You are a Manim expert. Write a Python script using Manim Community v0.18.
             raise ValueError(f"Cannot open Manim video: {scene_path}")
 
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        fps = float(cap.get(cv2.CAP_PROP_FPS))
         if frame_count < 10:
             cap.release()
             raise ValueError(f"Manim video has only {frame_count} frames")
+        if width < 1280 or height < 720:
+            cap.release()
+            raise ValueError(f"Manim video resolution too low: {width}x{height}")
+        if fps < 10:
+            cap.release()
+            raise ValueError(f"Manim video fps too low: {fps}")
 
         cap.release()
         return True
+
+    def _write_fallback_video(self, target: Path, label: str = "Fallback", duration: float = 6.0) -> bool:
+        """
+        Generate a neutral static fallback clip when Manim fails.
+        """
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            width, height = 1920, 1080
+            bg = Image.new("RGB", (width, height), color=(12, 12, 12))
+            draw = ImageDraw.Draw(bg)
+            try:
+                font = ImageFont.truetype("arial.ttf", 48)
+            except Exception:
+                font = ImageFont.load_default()
+            text = f"{label} (static fallback)"
+            tw, th = draw.textsize(text, font=font)
+            draw.text(((width - tw) / 2, (height - th) / 2), text, font=font, fill=(235, 235, 235))
+            frame = np.array(bg)
+            clip = ImageClip(frame).set_duration(duration).set_fps(30)
+            clip.write_videofile(
+                str(target),
+                codec="libx264",
+                audio=False,
+                fps=30,
+                threads=2,
+                ffmpeg_params=["-pix_fmt", "yuv420p"],
+                logger=None,
+                verbose=False,
+            )
+            clip.close()
+            self.logger.info("Wrote fallback animation clip to %s", target)
+            return True
+        except Exception as exc:
+            self.logger.error("Failed to write fallback Manim clip to %s: %s", target, exc, exc_info=True)
+            return False
 
     def build_scenes(self, dialogue_json: Dict, run_paths: RunPaths) -> List[Path]:
         scenes = self.identify_visual_needs(dialogue_json)

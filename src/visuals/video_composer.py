@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import re
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, TypeVar
@@ -321,30 +322,13 @@ class VideoComposer:
             return valid_images[:required_count]
 
         placeholders_needed = required_count - len(valid_images)
-        if placeholders_needed > 0 and allow_placeholders:
-            self.logger.warning(
-                "Only %d valid image(s) available, generating %d placeholder slide(s).",
-                len(valid_images),
-                placeholders_needed,
+        if placeholders_needed > 0:
+            msg = (
+                f"Missing {placeholders_needed} visual(s); validated only {len(valid_images)} / {required_count}. "
+                "Placeholders are disabled to avoid silent fallback."
             )
-            self.logger.info(
-                "[Placeholder] Generating %d placeholder slide(s) because only %d valid images passed validation.",
-                placeholders_needed,
-                len(valid_images),
-            )
-            placeholders = self._create_placeholder_slides(
-                count=placeholders_needed,
-                output_dir=image_dir,
-                metadata=metadata or {},
-                start_index=len(valid_images) + 1,
-            )
-            valid_images.extend(placeholders)
-        elif placeholders_needed > 0 and not allow_placeholders:
-            self.logger.warning(
-                "Only %d valid image(s) available; placeholders disabled (adaptive timeline).",
-                len(valid_images),
-            )
-            self.logger.info("[Placeholder] Placeholders disabled; timeline will stretch available visuals only.")
+            self.logger.error(msg)
+            raise RuntimeError(msg)
 
         return valid_images[:required_count]
 
@@ -502,7 +486,8 @@ class VideoComposer:
         raw_image_files: List[Path] = []
         prioritized_images: List[Path] = []
 
-        allow_placeholders = not adaptive_timeline
+        # Placeholders are disabled: fail fast if assets are missing
+        allow_placeholders = False
 
         if asset_paths is not None:
             existing = [p for p in asset_paths if p and p.exists()]
@@ -566,15 +551,16 @@ class VideoComposer:
             allow_placeholders=allow_placeholders,
         )
 
-        # Surface missing visuals explicitly when images were requested
-        if required_image_count > 0 and len(image_files) == 0:
-            warn_msg = (
-                f"No generated images available (requested {required_image_count}). "
-                "Falling back to slide-style visuals."
+        # Surface and fail on missing visuals when images were requested
+        if required_image_count > 0 and len(image_files) < required_image_count:
+            msg = (
+                f"Validated {len(image_files)} of {required_image_count} required visual(s); "
+                "aborting to avoid placeholder/blank output."
             )
-            self.logger.warning(warn_msg)
+            self.logger.error(msg)
             if run_paths:
-                run_paths.log(f"⚠ {warn_msg}")
+                run_paths.log(f"❌ {msg}")
+            raise RuntimeError(msg)
 
         if adaptive_timeline and run_paths:
             run_paths.log("Adaptive timeline: stretching available visuals (no placeholders).")
@@ -596,12 +582,38 @@ class VideoComposer:
             removed = set(p.name for p in raw_image_files) - set(p.name for p in image_files)
             self.logger.warning("Discarded %d invalid image(s): %s", len(removed), list(removed))
 
+        # region agent log
+        try:
+            log_path = Path(r"c:\Users\maorb\OneDrive\Desktop\PODCAST GENERATOR\.cursor\debug.log")
+            payload = {
+                "sessionId": "debug-session",
+                "runId": "pre-fix",
+                "hypothesisId": "H3-placeholder-selection",
+                "location": "video_composer.py:create_timeline",
+                "message": "asset_inventory",
+                "data": {
+                    "video_files": [p.name for p in video_files],
+                    "image_files": [p.name for p in image_files],
+                    "placeholders": [p.name for p in image_files if "placeholder" in p.name.lower()],
+                    "preview_cap": preview_cap,
+                    "adaptive_timeline": adaptive_timeline,
+                    "turn_count": turn_count,
+                    "required_image_count": required_image_count,
+                },
+                "timestamp": int(time.time() * 1000),
+            }
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(payload) + "\n")
+        except Exception:
+            pass
+        # endregion
+
         if not video_files and not image_files:
-            fallback_msg = "No rendered visuals found; generating slide-style video."
-            self.logger.warning(fallback_msg)
+            fallback_msg = "No rendered visuals found; failing to avoid slide/placeholder fallback."
+            self.logger.error(fallback_msg)
             if run_paths:
-                run_paths.log(fallback_msg)
-            return self._build_slide_clips(dialogue_json, metadata, total_duration)
+                run_paths.log(f"❌ {fallback_msg}")
+            raise RuntimeError(fallback_msg)
 
         # ----- Asset ordering: unified index + even distribution fallback -----
         indexed_assets: List[Tuple[int, int, str, Path]] = []
@@ -747,6 +759,7 @@ class VideoComposer:
                 break
 
             try:
+                bg_used: Optional[str] = None
                 if asset_type == "video":
                     fg_clip = VideoFileClip(str(media), has_mask=True)
                     self._log_clip_state(fg_clip, f"video:{media.name}", media, stage="loaded")
@@ -775,13 +788,16 @@ class VideoComposer:
                         try:
                             bg_clip = _build_image_clip(bg_path, duration)
                             self.logger.debug("Using image %s as background for video %s", bg_path.name, media.name)
+                            bg_used = bg_path.name
                         except Exception as img_err:
                             self.logger.warning("Background image failed (%s): %s", bg_path.name, img_err, exc_info=True)
                             bg_clip = ColorClip(size=(1920, 1080), color=self.SAFE_BG, duration=duration)
                             bg_clip = self._ensure_fps(bg_clip, 30)
+                            bg_used = "color_fallback"
                     else:
                         bg_clip = ColorClip(size=(1920, 1080), color=self.SAFE_BG, duration=duration)
                         bg_clip = self._ensure_fps(bg_clip, 30)
+                        bg_used = "color_fallback"
 
                     fg_clip = self._apply_start(fg_clip, 0)
                     bg_clip = self._apply_start(bg_clip, 0)
@@ -811,45 +827,45 @@ class VideoComposer:
                         )
                     except Exception as img_err:
                         self.logger.warning(
-                            "Failed to process image %s: %s, using placeholder fallback",
+                            "Failed to process image %s: %s",
                             media.name,
                             img_err,
                             exc_info=True,
                         )
-                        placeholder = None
-                        try:
-                            placeholder_paths = self._create_placeholder_slides(
-                                count=1,
-                                output_dir=animations_dir,
-                                metadata=metadata,
-                                start_index=len(clips) + 1,
-                            )
-                            placeholder = placeholder_paths[0] if placeholder_paths else None
-                        except Exception as placeholder_err:
-                            self.logger.error("Placeholder generation failed: %s", placeholder_err, exc_info=True)
-                        if placeholder:
-                            try:
-                                clip = ImageClip(str(placeholder))
-                                clip = self._apply_duration(clip, duration)
-                                clip = self._ensure_fps(clip, 30)
-                                clip = self._normalize_clip(clip, f"ph-image:{placeholder.name}", path=placeholder, duration=duration)
-                                if apply_ken_burns:
-                                    clip = self.apply_ken_burns(clip)
-                                clip = self._apply_start(clip, current_start)
-                            except Exception as ph_err:
-                                self.logger.error("Placeholder clip failed, reverting to neutral fill: %s", ph_err)
-                                clip = self._safe_placeholder_clip(duration, "Missing asset")
-                                clip = self._apply_start(clip, current_start)
-                        else:
-                            self.logger.info("[Placeholder] Using neutral placeholder because image processing failed.")
-                            clip = self._safe_placeholder_clip(duration, "Missing asset")
-                            clip = self._apply_start(clip, current_start)
+                        raise RuntimeError(f"Image processing failed for {media.name}: {img_err}") from img_err
                 clips.append(clip)
                 if asset_type == "image":
                     last_image_index = len(clips) - 1
                     last_image_clip = clip
                     image_idx += 1
                 current_start += getattr(clip, "duration", 0.0) or 0.0
+                # region agent log
+                try:
+                    log_path = Path(r"c:\Users\maorb\OneDrive\Desktop\PODCAST GENERATOR\.cursor\debug.log")
+                    payload = {
+                        "sessionId": "debug-session",
+                        "runId": "pre-fix",
+                        "hypothesisId": "H2-layering-alpha",
+                        "location": "video_composer.py:create_timeline_loop",
+                        "message": "clip_selected",
+                        "data": {
+                            "slot": len(clips),
+                            "asset_type": asset_type,
+                            "media": media.name if isinstance(media, Path) else str(media),
+                            "start": float(getattr(clip, "start", 0.0) or 0.0),
+                            "duration": float(getattr(clip, "duration", 0.0) or 0.0),
+                            "size": (getattr(clip, "w", None), getattr(clip, "h", None)),
+                            "fps": getattr(clip, "fps", None) or getattr(getattr(clip, "reader", None), "fps", None),
+                            "is_colorclip": isinstance(clip, ColorClip),
+                            "bg_used": bg_used,
+                        },
+                        "timestamp": int(time.time() * 1000),
+                    }
+                    with open(log_path, "a", encoding="utf-8") as f:
+                        f.write(json.dumps(payload) + "\n")
+                except Exception:
+                    pass
+                # endregion
                 try:
                     self.logger.info(
                         "[Timeline] slot=%d type=%s path=%s start=%.2fs dur=%.2fs size=%s fps=%s placeholder=%s",
@@ -916,59 +932,38 @@ class VideoComposer:
 
         # If no clips survived validation, generate a placeholder to avoid blank/grey output
         if not clip_list:
-            self.logger.warning("No valid clips to render; generating placeholder slide clip.")
-            placeholder = None
-            try:
-                placeholder_paths = self._create_placeholder_slides(
-                    count=1,
-                    output_dir=output_file.parent,
-                    metadata=metadata or {},
-                    start_index=1,
-                )
-                placeholder = placeholder_paths[0] if placeholder_paths else None
-            except Exception as ph_exc:
-                self.logger.error("Failed to build placeholder slide: %s", ph_exc)
-            if placeholder:
-                ph_clip = ImageClip(str(placeholder))
-                ph_clip = self._apply_duration(ph_clip, audio_duration or 1.0)
-                ph_clip = self._ensure_fps(ph_clip, 30)
-                try:
-                    ph_clip = self.apply_ken_burns(ph_clip)
-                except Exception as kb_exc:
-                    self.logger.warning("Ken Burns skipped for placeholder (primary): %s", kb_exc)
-                clip_list = [ph_clip]
-            else:
-                ph_clip = ColorClip(size=(1920, 1080), color=self.SAFE_BG, duration=audio_duration or 1.0)
-                ph_clip = self._ensure_fps(ph_clip, 30)
-                clip_list = [ph_clip]
+            msg = "No valid clips to render; failing to avoid placeholder video."
+            self.logger.error(msg)
+            raise RuntimeError(msg)
         
         has_non_solid = any(not isinstance(c, ColorClip) for c in clip_list)
         if not has_non_solid:
-            self.logger.warning("Only solid color clips detected; injecting placeholder slide with text.")
-            placeholder = None
-            try:
-                placeholder_paths = self._create_placeholder_slides(
-                    count=1,
-                    output_dir=output_file.parent,
-                    metadata=metadata or {},
-                    start_index=1,
-                )
-                placeholder = placeholder_paths[0] if placeholder_paths else None
-            except Exception as ph_exc:
-                self.logger.error("Failed to build placeholder slide for solid-color-only timeline: %s", ph_exc, exc_info=True)
-            if placeholder:
-                ph_clip = ImageClip(str(placeholder))
-                ph_clip = self._apply_duration(ph_clip, audio_duration or clip_list[0].duration or 1.0)
-                ph_clip = self._ensure_fps(ph_clip, 30)
-                try:
-                    ph_clip = self.apply_ken_burns(ph_clip)
-                except Exception as kb_exc:
-                    self.logger.warning("Ken Burns skipped for placeholder (solid-only): %s", kb_exc)
-                clip_list = [ph_clip]
-            else:
-                ph_clip = ColorClip(size=(1920, 1080), color=self.SAFE_BG, duration=audio_duration or 1.0)
-                ph_clip = self._ensure_fps(ph_clip, 30)
-                clip_list = [ph_clip]
+            msg = "Only solid color clips detected; failing to avoid placeholder output."
+            self.logger.error(msg)
+            raise RuntimeError(msg)
+
+        # region agent log
+        try:
+            log_path = Path(r"c:\Users\maorb\OneDrive\Desktop\PODCAST GENERATOR\.cursor\debug.log")
+            payload = {
+                "sessionId": "debug-session",
+                "runId": "pre-fix",
+                "hypothesisId": "H2-layering-alpha",
+                "location": "video_composer.py:render_final_video",
+                "message": "timeline_summary",
+                "data": {
+                    "clip_count": len(clip_list),
+                    "colorclip_count": sum(1 for c in clip_list if isinstance(c, ColorClip)),
+                    "has_non_solid": has_non_solid,
+                    "audio_duration": audio_duration,
+                },
+                "timestamp": int(time.time() * 1000),
+            }
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(json.dumps(payload) + "\n")
+        except Exception:
+            pass
+        # endregion
 
         # Concatenate video clips
         # Log clip ordering before compose
@@ -1298,26 +1293,13 @@ class VideoComposer:
             )
         except Exception as exc:
             self.logger.error(
-                "[VideoComposer] Timeline creation failed; using slide fallback: %s",
+                "[VideoComposer] Timeline creation failed: %s",
                 exc,
                 exc_info=True,
             )
             if run_paths:
-                run_paths.log(f"Timeline creation failed; using slide fallback: {exc}")
-
-            try:
-                audio_clip = AudioFileClip(str(run_paths.final_audio_path))
-                total_duration = audio_clip.duration
-                audio_clip.close()
-            except Exception as audio_exc:
-                self.logger.error(
-                    "[VideoComposer] Failed to read audio duration for fallback: %s",
-                    audio_exc,
-                    exc_info=True,
-                )
-                total_duration = 0
-
-            clips = self._build_slide_clips(dialogue_json, metadata, total_duration)
+                run_paths.log(f"❌ Timeline creation failed: {exc}")
+            raise
         output = self.render_final_video(
             clips,
             run_paths.final_audio_path,

@@ -90,6 +90,16 @@ def run(
         "--preview",
         help="Run in preview mode (first 5 sentences only).",
     ),
+    ai_enhance: bool = typer.Option(
+        False,
+        "--ai-enhance/--no-ai-enhance",
+        help="Enable AI quality enhancement (experimental, default off).",
+    ),
+    ai_auto_fix: bool = typer.Option(
+        False,
+        "--ai-auto-fix/--no-ai-auto-fix",
+        help="Allow AI to auto-apply safe fixes (requires --ai-enhance).",
+    ),
     target_language: Optional[str] = typer.Option(
         None,
         "--target-language",
@@ -117,6 +127,10 @@ def run(
         settings = replace(settings, video_duration_seconds=video_duration, auto_video_duration=False)
     if preview:
         settings = replace(settings, preview_mode=True)
+    if ai_enhance:
+        settings = replace(settings, enable_ai_quality_enhancement=True)
+    if ai_auto_fix:
+        settings = replace(settings, auto_apply_ai_fixes=True, enable_ai_quality_enhancement=True)
 
     # Choose target language (prompt if mixed/English and not provided)
     detected_default = lang_info.primary if lang_info.primary in ("he", "en") else "he"

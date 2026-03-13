@@ -84,6 +84,7 @@ class GoogleAIVisualGenerator:
         self._imagen_client = None
         self._veo_client = None
         self._placeholder_events: List[Dict[str, str]] = []
+        self.visual_text_language = str(getattr(self.settings, "visual_text_language", "en") or "en").lower()
         # Trace current visual config for diagnostics
         self.logger.info(
             "Visual generator init | mode=%s | enable_visuals=%s | imagen_model=%s | veo_model=%s | gemini_key=%s",
@@ -160,11 +161,17 @@ class GoogleAIVisualGenerator:
         return "Google AI client not initialized"
 
     def _sanitize_prompt_text(self, text: Optional[str]) -> str:
-        """Return ASCII-only text for prompts to avoid Hebrew/RTL issues."""
+        """Return prompt text respecting visual_text_language policy."""
         if not text:
             return ""
+        if self.visual_text_language.startswith("he"):
+            return " ".join(text.split())
         cleaned = text.encode("ascii", "ignore").decode("ascii", errors="ignore")
         return " ".join(cleaned.split())
+
+    def _apply_language_policy(self, text: str) -> str:
+        """Normalize text according to configured visual language preference."""
+        return self._sanitize_prompt_text(text)
 
     def _describe_topic(self, metadata: Dict) -> str:
         topic = metadata.get("topic") or metadata.get("summary") or "learning content"
@@ -1005,6 +1012,7 @@ class GoogleAIVisualGenerator:
                     # Append style hints to prompt if not already included
                     if style.lower() not in prompt.lower():
                         enhanced_prompt = f"{prompt} {style}"
+                enhanced_prompt = self._apply_language_policy(enhanced_prompt)
 
                 # Guard against Azure hallucinations for non-cloud topics
                 if non_cloud_topic and "azure" in enhanced_prompt.lower():
@@ -1072,6 +1080,7 @@ class GoogleAIVisualGenerator:
             enhanced_video_prompt = video_prompt
             if video_style and video_style.lower() not in video_prompt.lower():
                 enhanced_video_prompt = f"{video_prompt} {video_style}"
+            enhanced_video_prompt = self._apply_language_policy(enhanced_video_prompt)
             
             # Limit duration for VEO
             actual_duration = min(video_duration, 60)  # VEO max is usually around 60s

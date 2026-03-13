@@ -79,6 +79,57 @@ def shape_rtl(text: Optional[str], add_isolates: bool = True) -> str:
         return processed
 
 
+def srt_text(logical: Optional[str]) -> str:
+    """
+    Logical text for SRT output (no shaping/reversal).
+
+    - Trims and collapses internal whitespace to single spaces.
+    - Never applies bidi.get_display or arabic_reshaper.
+    """
+    if not logical:
+        return ""
+    return " ".join(str(logical).strip().split())
+
+
+def render_text(logical: Optional[str]) -> str:
+    """
+    Visual rendering of logical text (shaping only for display).
+
+    - Keeps the logical order intact for upstream consumers.
+    - Applies RTL shaping + isolates for rendering.
+    """
+    return shape_rtl(logical or "", add_isolates=True)
+
+
+def wrap_logical_text(text: str, max_chars_per_line: int = 42) -> list[str]:
+    """
+    Wrap logical text on word boundaries before any RTL shaping.
+
+    - Preserves whole words; only breaks mid-word if a single word exceeds the limit.
+    - Returns a list of lines (without shaping).
+    """
+    if not text:
+        return []
+
+    words = text.split()
+    lines: list[str] = []
+    current: list[str] = []
+
+    for word in words:
+        tentative = " ".join(current + [word]).strip()
+        if current and len(tentative) > max_chars_per_line:
+            lines.append(" ".join(current))
+            current = [word]
+        else:
+            current.append(word)
+
+    if current:
+        lines.append(" ".join(current))
+
+    # Fallback: ensure at least the original text is returned
+    return lines or [text.strip()]
+
+
 def analyze_language(text: str) -> LanguageDetection:
     """
     Score transcript language composition (Hebrew/Latin/Other) and pick primary.

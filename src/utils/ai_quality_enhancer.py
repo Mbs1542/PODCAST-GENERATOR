@@ -519,11 +519,58 @@ def enhance_with_ai(
         EnhancementPlan with suggestions
     """
     enhancer = AIQualityEnhancer(settings)
+
+    # Guardrail: ensure required assets exist before invoking AI
+    available_videos = list(run_dir.glob("*.mp4"))
+    available_images = list(run_dir.glob("*.png")) + list(run_dir.glob("*.jpg")) + list(run_dir.glob("*.jpeg"))
+    if not available_videos and not available_images:
+        enhancer.logger.warning("[AIQualityEnhancer] No visual/video assets found; skipping AI enhancement.")
+        skipped_plan = EnhancementPlan(
+            manual_review=["Skipped AI enhancement: no assets found in run_dir"],
+            suggestions=[],
+            auto_fixes=[],
+            priority_order=[],
+        )
+        _write_ai_report(run_dir, skipped_plan, reason="no_assets")
+        return skipped_plan
+
     plan = enhancer.analyze_quality_report(quality_report, run_dir, metadata, dialogue)
     
     if apply_auto_fixes and plan.auto_fixes:
         results = enhancer.apply_auto_fixes(plan, run_dir, quality_report)
         plan.details = {"auto_fix_results": results}
     
+    _write_ai_report(run_dir, plan, reason=None)
     return plan
+
+
+def _write_ai_report(run_dir: Path, plan: EnhancementPlan, reason: Optional[str]) -> None:
+    """
+    Persist a small JSON report describing AI enhancement actions/decisions.
+    """
+    report = {
+        "reason": reason,
+        "suggestions": [
+            {
+                "issue": s.issue,
+                "severity": s.severity,
+                "category": s.category,
+                "action": s.action,
+                "auto_fixable": s.auto_fixable,
+                "estimated_impact": s.estimated_impact,
+                "details": s.details,
+            }
+            for s in getattr(plan, "suggestions", []) or []
+        ],
+        "auto_fixes": getattr(plan, "auto_fixes", []),
+        "manual_review": getattr(plan, "manual_review", []),
+        "priority_order": getattr(plan, "priority_order", []),
+    }
+    try:
+        run_dir.mkdir(parents=True, exist_ok=True)
+        output_path = run_dir / "ai_enhancement_report.json"
+        output_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception:
+        # best effort; do not raise
+        pass
 

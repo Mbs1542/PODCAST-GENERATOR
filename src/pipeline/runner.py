@@ -22,6 +22,7 @@ from ..utils import (
     TimingContext,
     QualityChecker,
 )
+from ..utils.ai_quality_enhancer import AIQualityEnhancer, enhance_with_ai
 from ..utils.guardian import ProductionGuardian
 from ..utils.visual_metadata_builder import build_visual_metadata_locally, generate_universal_visual_metadata
 from ..visuals import ManimSceneGenerator, VideoComposer, GoogleAIVisualGenerator
@@ -647,10 +648,15 @@ class LecturePipeline:
                     google_status = self.google_ai.status_summary()
                     run_paths.log(f"[Google Imagen] {google_status}")
                     if not self.google_ai.is_available:
-                        run_paths.log("⚠ Google Imagen לא זמין – יווצרו placeholders עד לעדכון המפתח/חבילה.")
+                        msg = (
+                            "Google Imagen/VEO selected but service is unavailable. "
+                            "הפעילו מפתח/חיבור ונסו שוב."
+                        )
+                        run_paths.log(f"❌ {msg}")
+                        self.logger.error("[LecturePipeline.run] %s", msg)
+                        raise RuntimeError(msg)
                 
                 ai_visuals: List[Path] = []
-                google_failed = False
                 if use_google_ai:
                     # Generate AI-powered visuals using Google Imagen/VEO
                     image_count = getattr(self.settings, 'image_count', 5)
@@ -696,20 +702,15 @@ class LecturePipeline:
                                 f"(images={len(image_files)}, videos={len(video_files)})"
                             )
                         else:
-                            run_paths.log("Warning: No AI visuals were generated.")
-                            self.logger.warning("[LecturePipeline.run] Google AI returned no visual files")
+                            msg = "Selected Google Imagen/VEO returned no visual assets."
+                            run_paths.log(f"❌ {msg}")
+                            self.logger.error("[LecturePipeline.run] %s", msg)
+                            raise RuntimeError(msg)
                     except Exception as exc:
-                        google_failed = True
-                        self.logger.warning("[LecturePipeline.run] Google AI failed: %s\n%s", 
-                                          exc, traceback.format_exc())
-                        run_paths.log(f"Google AI visuals failed (continuing with fallback): {exc}")
-                
-                # Force a local Manim fallback if Google AI failed or returned nothing
-                fallback_needed = (not ai_visuals) and (google_failed or not use_manim)
-                if fallback_needed:
-                    run_paths.log("⚠ Google Imagen לא סיפק תמונות – מייצר אנימציות Manim מקומיות מהטקסט.")
-                    self.logger.info("[LecturePipeline.run] Triggering Manim fallback due to missing/failed AI visuals")
-                    use_manim = True
+                        msg = f"Selected Google Imagen/VEO failed: {exc}"
+                        self.logger.warning("[LecturePipeline.run] %s\n%s", msg, traceback.format_exc())
+                        run_paths.log(f"❌ {msg}")
+                        raise RuntimeError(msg)
                 
                 if use_manim:
                     run_paths.log("🎬 Rendering Video (Manim)...")
@@ -718,9 +719,13 @@ class LecturePipeline:
                     except Exception as manim_exc:
                         scene_paths = []
                         self.logger.warning("[LecturePipeline.run] Manim generation failed: %s", manim_exc, exc_info=True)
-                        run_paths.log(f"Manim generation failed, continuing with fallback: {manim_exc}")
+                        run_paths.log(f"❌ Manim generation failed: {manim_exc}")
+                        raise RuntimeError(f"Manim generation failed: {manim_exc}")
                     if not scene_paths:
-                        self.logger.info("[LecturePipeline.run] No Manim scenes generated")
+                        msg = "Selected Manim generator produced no scenes."
+                        self.logger.error("[LecturePipeline.run] %s", msg)
+                        run_paths.log(f"❌ {msg}")
+                        raise RuntimeError(msg)
                 
                 # Guardian: validate assets and auto-heal before composition
                 guardian_qc = QualityChecker(self.settings)
@@ -750,6 +755,11 @@ class LecturePipeline:
                 )
 
                 optimized_assets = guardian_result.manifest
+                if not optimized_assets:
+                    msg = "No validated visual assets available after guardian checks."
+                    self.logger.error("[LecturePipeline.run] %s", msg)
+                    run_paths.log(f"❌ {msg}")
+                    raise RuntimeError(msg)
                 run_paths.log(f"Visual assets prepared for composition: {len(optimized_assets)} item(s).")
                 try:
                     self.logger.info(
@@ -798,47 +808,12 @@ class LecturePipeline:
                                    run_paths.final_video_path.name)
                 except Exception as exc:
                     self.logger.error(
-                        "[LecturePipeline.run] Recoverable video composition error: %s\n%s",
+                        "[LecturePipeline.run] Video composition failed: %s\n%s",
                         exc,
                         traceback.format_exc(),
                     )
-                    run_paths.log(f"Recoverable video composition error: {exc} — switching to slide fallback")
-
-                    # Trigger QualityChecker to log/attempt healing insights
-                    try:
-                        qc = QualityChecker(self.settings)
-                        qc.run_postprocess_checks(
-                            run_dir=run_paths.run_dir,
-                            expected_segments=expected_segments,
-                            run_type=run_type,
-                        )
-                    except Exception as qc_exc:
-                        self.logger.warning("[LecturePipeline.run] QualityChecker fallback failed: %s", qc_exc)
-                        run_paths.log(f"QualityChecker fallback failed: {qc_exc}")
-
-                    # Slide fallback to ensure an output is produced
-                    try:
-                        with AudioFileClip(str(run_paths.final_audio_path)) as ac:
-                            total_duration = ac.duration
-                        slide_clips = self.video._build_slide_clips(dialogue_json, metadata, total_duration)
-                        self.video.render_final_video(
-                            slide_clips,
-                            run_paths.final_audio_path,
-                            run_paths.final_video_path,
-                            dialogue_json=dialogue_json,
-                            segment_durations=segment_durations,
-                            lead_in_seconds=lead_in_seconds,
-                            outro_seconds=outro_seconds,
-                            metadata=metadata,
-                        )
-                        run_paths.log(f"Fallback slide video rendered to {run_paths.final_video_path}")
-                        self.logger.info("[LecturePipeline.run] Fallback slide video rendered (anti-fragile path).")
-                    except Exception as fallback_exc:
-                        self.logger.error(
-                            "[LecturePipeline.run] Fallback slide rendering failed: %s\n%s",
-                            fallback_exc,
-                            traceback.format_exc(),
-                        )
+                    run_paths.log(f"❌ Video composition failed: {exc}")
+                    raise
                         run_paths.log(f"Fallback slide rendering failed: {fallback_exc}")
                         raise
                     
@@ -880,6 +855,37 @@ class LecturePipeline:
             
             self._stage_times["postprocess_checks"] = time.time() - stage_start
             timing.checkpoint("postprocess_checks")
+            
+            # AI-Powered Quality Enhancement (optional)
+            if getattr(self.settings, "enable_ai_quality_enhancement", False):
+                try:
+                    ai_stage_start = time.time()
+                    run_paths.log("Running AI-powered quality enhancement analysis...")
+                    self.logger.info("[LecturePipeline.run] Running AI quality enhancement")
+                    
+                    enhancement_plan = enhance_with_ai(
+                        quality_report=postprocess_report,
+                        run_dir=run_paths.run_dir,
+                        settings=self.settings,
+                        metadata=metadata,
+                        dialogue=dialogue_json,
+                        apply_auto_fixes=getattr(self.settings, "auto_apply_ai_fixes", False),
+                    )
+                    
+                    if enhancement_plan.suggestions:
+                        run_paths.log(f"AI generated {len(enhancement_plan.suggestions)} improvement suggestions")
+                        for i, suggestion in enumerate(enhancement_plan.suggestions[:5], 1):  # Top 5
+                            run_paths.log(f"  {i}. [{suggestion.severity.upper()}] {suggestion.issue}")
+                            run_paths.log(f"     Action: {suggestion.action}")
+                        
+                        if enhancement_plan.auto_fixes:
+                            run_paths.log(f"Applied {len(enhancement_plan.auto_fixes)} automatic fixes")
+                    
+                    self._stage_times["ai_quality_enhancement"] = time.time() - ai_stage_start
+                    timing.checkpoint("ai_quality_enhancement")
+                except Exception as enh_exc:
+                    self.logger.warning("[LecturePipeline.run] AI quality enhancement failed: %s", enh_exc)
+                    run_paths.log(f"AI quality enhancement skipped: {enh_exc}")
 
             # Stage 6: PPTX export (optional)
             if export_ppt:

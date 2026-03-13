@@ -1,20 +1,20 @@
 {
   "chat_font_family": "Assistant",
-  "chat_font_size": 11,
+  "chat_font_size": 10,
   "chat_theme": "dark",
   "chat_banner_brightness": 0.85,
   "chat_bg_theme": "midnight",
   "default_tts_provider": "azure",
-  "right_panel_width": 360,
-  "main_window_geometry": "01d9d0cb0003000000000001fffffff4000005b2000003520000000100000011000005b200000352000000000000000005a00000000100000011000005b200000352",
-  "main_window_state": "000000ff00000000fd00000000000005b20000032c00000004000000040000000800000008fc00000000",
+  "right_panel_width": 353,
+  "main_window_geometry": "01d9d0cb0003000000000001000000000000059e0000035e000000010000001d0000059e0000035e000000000000000005a0000000010000001d0000059e0000035e",
+  "main_window_state": "000000ff00000000fd000000000000059e0000032c00000004000000040000000800000008fc00000000",
   "main_splitter_sizes": [
     364,
-    1068
+    1048
   ],
   "content_splitter_sizes": [
-    702,
-    360
+    689,
+    353
   ],
   "chat_font_path": "",
   "chat_user_bubble": "#0f766e",
@@ -30,8 +30,14 @@
   "visual_settings_geometry": "01d9d0cb00030000000001d50000007b000003c8000002bd000001d500000098000003c8000002bd000000000000000005a0000001d500000098000003c8000002bd",
   "azure_default_voice": "he-IL-AvriNeural",
   "version": "3.4.4",
-  "budget_reset_day": 1,
+  "budget_reset_day": 14,
   "monthly_openai_cost_limit": 180.0,
   "monthly_tts_character_limit": 450000,
-  "monthly_elevenlabs_character_limit": 100000
+  "monthly_elevenlabs_character_limit": 100000,
+  "cost_center_geometry": "01d9d0cb00030000000000aefffffff40000049600000352000000ae000000110000049600000352000000000000000005a0000000ae000000110000049600000352",
+  "cost_center_tab_index": 0,
+  "cost_center_scroll_pos": 0,
+  "reset_day_azure": 14,
+  "reset_day_gemini": 1,
+  "reset_day_elevenlabs": 1
 }

@@ -14,9 +14,10 @@ from __future__ import annotations
 import calendar
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import QByteArray, QTimer, Qt
+from PyQt6.QtCore import QByteArray, QSettings, Qt
 from PyQt6.QtGui import QColor
 from PyQt6.QtWidgets import (
     QCheckBox,
@@ -70,6 +71,8 @@ from ..constants import (
     VEO_COST_PER_SECOND,
     VIDEO_OVERHEAD_COST,
     WORDS_PER_MINUTE,
+    QSETTINGS_APP,
+    QSETTINGS_ORG,
 )
 
 
@@ -153,6 +156,9 @@ class CostCenterDialog(QDialog):
         self._helper_label = helper_label_factory
         self._last_scroll_pos: int = 0
         self._last_tab_index: int = 0
+        self._settings_store = QSettings(QSETTINGS_ORG, QSETTINGS_APP)
+        self._restored_geometry: Optional[QByteArray] = None
+        self._load_persisted_settings()
         
         self._setup_window()
         self._setup_ui()
@@ -164,10 +170,62 @@ class CostCenterDialog(QDialog):
         self.setWindowTitle("מרכז עלויות וניתוח")
         self.setLayoutDirection(Qt.LayoutDirection.RightToLeft)
         # Friendlier default size that fits on smaller screens, still resizable
-        self.resize(820, 600)
-        self.setMinimumHeight(320)
-        self.setMinimumWidth(560)
+        available = self.screen().availableGeometry() if self.screen() else None
+        target_w, target_h = 900, 640
+        if available:
+            target_w = min(target_w, max(600, available.width() - 80))
+            target_h = min(target_h, max(440, available.height() - 80))
+        self.resize(target_w, target_h)
+        self.setMinimumSize(max(600, target_w - 260), max(440, target_h - 260))
         self.setSizeGripEnabled(True)
+
+    def _load_persisted_settings(self) -> None:
+        """Load persisted geometry and reset days from QSettings."""
+        try:
+            def _clamp_day(value: object, fallback: int) -> int:
+                try:
+                    return max(1, min(31, int(value)))
+                except Exception:
+                    return fallback
+
+            azure_day = self._settings_store.value("cost_center/reset_day_azure")
+            gemini_day = self._settings_store.value("cost_center/reset_day_gemini")
+            eleven_day = self._settings_store.value("cost_center/reset_day_elevenlabs")
+
+            if azure_day is not None:
+                self.settings.reset_day_azure = _clamp_day(azure_day, getattr(self.settings, "reset_day_azure", 14))
+            if gemini_day is not None:
+                self.settings.reset_day_gemini = _clamp_day(gemini_day, getattr(self.settings, "reset_day_gemini", 1))
+            if eleven_day is not None:
+                self.settings.reset_day_elevenlabs = _clamp_day(eleven_day, getattr(self.settings, "reset_day_elevenlabs", 1))
+
+            stored_tab = self._settings_store.value("cost_center/tab_index")
+            if stored_tab is not None:
+                try:
+                    self._last_tab_index = max(0, int(stored_tab))
+                except Exception:
+                    self._last_tab_index = 0
+
+            stored_scroll = self._settings_store.value("cost_center/scroll_pos")
+            if stored_scroll is not None:
+                try:
+                    self._last_scroll_pos = max(0, int(stored_scroll))
+                except Exception:
+                    self._last_scroll_pos = 0
+
+            geom_val = self._settings_store.value("cost_center/geometry", type=QByteArray)
+            if isinstance(geom_val, QByteArray) and not geom_val.isEmpty():
+                self._restored_geometry = geom_val
+            elif isinstance(geom_val, (bytes, bytearray)):
+                self._restored_geometry = QByteArray(geom_val)
+            elif isinstance(geom_val, str) and geom_val:
+                try:
+                    self._restored_geometry = QByteArray.fromHex(geom_val.encode("ascii"))
+                except Exception:
+                    self._restored_geometry = None
+        except Exception:
+            # If QSettings is unreadable, continue with defaults
+            self._restored_geometry = None
 
     def _setup_ui(self) -> None:
         """Build the tabbed dialog UI."""
@@ -175,22 +233,23 @@ class CostCenterDialog(QDialog):
         main_layout.setContentsMargins(12, 12, 12, 12)
         main_layout.setSpacing(12)
         
-        # Title
+        # Title row with date
+        title_row = QHBoxLayout()
         title = QLabel("מרכז עלויות וניתוח")
         title.setStyleSheet("font-size: 20px; font-weight: bold; color: #22c55e;")
-        main_layout.addWidget(title)
+        title_row.addWidget(title)
+        title_row.addStretch(1)
         
-        # Body wrapped in scroll area so dialog can shrink vertically
-        self.scroll_area = QScrollArea()
-        self.scroll_area.setWidgetResizable(True)
-        self.scroll_area.setFrameShape(QFrame.Shape.NoFrame)
-        self.scroll_area.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAsNeeded)
-        scroll_widget = QWidget()
-        scroll_layout = QVBoxLayout(scroll_widget)
-        scroll_layout.setContentsMargins(0, 0, 0, 0)
-        scroll_layout.setSpacing(12)
-        
+        # Current date display
+        self.date_label = QLabel()
+        self._update_date_display()
+        self.date_label.setStyleSheet(
+            "font-size: 13px; color: #94a3b8; background: #1e293b; "
+            "padding: 6px 12px; border-radius: 6px;"
+        )
+        title_row.addWidget(self.date_label)
+        main_layout.addLayout(title_row)
+
         # Tabs
         self.tabs = QTabWidget()
         self.tabs.setStyleSheet("""
@@ -216,6 +275,7 @@ class CostCenterDialog(QDialog):
                 background: #334155;
             }
         """)
+        self.tabs.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         
         # Tab 1: Tables
         self.tabs.addTab(self._build_tables_tab(), "טבלאות עלויות")
@@ -223,58 +283,147 @@ class CostCenterDialog(QDialog):
         # Tab 2: Charts
         self.tabs.addTab(self._build_charts_tab(), "גרפים וניתוח")
         self.tabs.currentChanged.connect(lambda idx: setattr(self, "_last_tab_index", idx))
-        
-        scroll_layout.addWidget(self.tabs, 1)
-        
+        main_layout.addWidget(self.tabs, 1)
+
         # Calculator section (always visible)
-        scroll_layout.addWidget(self._build_calculator())
-        scroll_layout.addStretch(1)
-        
-        self.scroll_area.setWidget(scroll_widget)
-        # Make wheel scrolling less jumpy
-        self.scroll_area.verticalScrollBar().setSingleStep(24)
-        self.scroll_area.verticalScrollBar().setPageStep(160)
-        self.scroll_area.verticalScrollBar().valueChanged.connect(self._on_scroll_changed)
-        main_layout.addWidget(self.scroll_area, 1)
+        calculator = self._build_calculator()
+        calculator.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Minimum)
+        main_layout.addWidget(calculator)
 
     def _restore_state(self) -> None:
         """Restore geometry, tab, and scroll position for the dialog."""
-        geo_hex = getattr(self.settings, "cost_center_geometry", "") or ""
-        if isinstance(geo_hex, str) and geo_hex:
+        if self._restored_geometry:
             try:
-                self.restoreGeometry(QByteArray.fromHex(geo_hex.encode("ascii")))
+                self.restoreGeometry(self._restored_geometry)
             except Exception:
-                # Ignore corrupted geometry
                 pass
+        else:
+            geo_hex = getattr(self.settings, "cost_center_geometry", "") or ""
+            if isinstance(geo_hex, str) and geo_hex:
+                try:
+                    self.restoreGeometry(QByteArray.fromHex(geo_hex.encode("ascii")))
+                except Exception:
+                    # Ignore corrupted geometry
+                    pass
 
-        stored_tab = getattr(self.settings, "cost_center_tab_index", 0)
+        stored_tab = self._last_tab_index or getattr(self.settings, "cost_center_tab_index", 0)
         if isinstance(stored_tab, int) and 0 <= stored_tab < self.tabs.count():
             self._last_tab_index = stored_tab
             self.tabs.setCurrentIndex(stored_tab)
 
+        # Scroll position retained for backward compatibility; no-op without a scroll area
         stored_scroll = getattr(self.settings, "cost_center_scroll_pos", 0)
         try:
             self._last_scroll_pos = max(0, int(stored_scroll))
         except Exception:
             self._last_scroll_pos = 0
 
-        # Apply scroll restoration after layout is ready
-        QTimer.singleShot(0, lambda: self.scroll_area.verticalScrollBar().setValue(self._last_scroll_pos))
+    def _persist_reset_days(self) -> None:
+        """Persist reset-day spin boxes immediately."""
+        try:
+            self.settings.reset_day_azure = int(self.reset_day_azure_spin.value())
+            self.settings.reset_day_gemini = int(self.reset_day_gemini_spin.value())
+            self.settings.reset_day_elevenlabs = int(self.reset_day_elevenlabs_spin.value())
+            # Maintain legacy budget_reset_day alignment
+            self.settings.budget_reset_day = self.settings.reset_day_azure
 
-    def _on_scroll_changed(self, value: int) -> None:
-        """Track last scroll position for persistence."""
-        self._last_scroll_pos = value
+            payload = {
+                "budget_reset_day": self.settings.budget_reset_day,
+                "reset_day_azure": self.settings.reset_day_azure,
+                "reset_day_gemini": self.settings.reset_day_gemini,
+                "reset_day_elevenlabs": self.settings.reset_day_elevenlabs,
+            }
+            self.settings.save_ui_preferences(payload)
+
+            self._settings_store.setValue("cost_center/reset_day_azure", self.settings.reset_day_azure)
+            self._settings_store.setValue("cost_center/reset_day_gemini", self.settings.reset_day_gemini)
+            self._settings_store.setValue("cost_center/reset_day_elevenlabs", self.settings.reset_day_elevenlabs)
+            self._settings_store.sync()
+        except Exception:
+            # Non-fatal persistence failure
+            pass
+
+    def _update_counters(self) -> None:
+        """Update run/metadata counters for the dashboard badges."""
+        entries = self.history.all() or []
+        run_count = len(entries)
+        metadata_count = 0
+        visual_metadata_count = 0
+
+        for entry in entries:
+            run_dir = entry.get("run_dir") or ""
+            if not run_dir:
+                continue
+            path = Path(run_dir)
+            if (path / "metadata.json").exists():
+                metadata_count += 1
+            if (path / "visual_metadata.json").exists():
+                visual_metadata_count += 1
+
+        self.run_count_label.setText(f"סה\"כ ריצות: {run_count}")
+        self.metadata_count_label.setText(f"מטא דאטה: {metadata_count}")
+        self.visual_metadata_count_label.setText(f"מטא דאטה ויזואלי: {visual_metadata_count}")
+
+    def _update_date_display(self) -> None:
+        """Update the current date display in the header."""
+        try:
+            today = datetime.now(timezone.utc).date()
+            # Format: יום, תאריך (Hebrew format)
+            days_he = ["שני", "שלישי", "רביעי", "חמישי", "שישי", "שבת", "ראשון"]
+            day_name = days_he[today.weekday()]
+            date_str = today.strftime("%d.%m.%Y")
+            self.date_label.setText(f"{day_name}, {date_str}")
+        except Exception:
+            # Fallback to simple date if formatting fails
+            try:
+                today = datetime.now(timezone.utc).date()
+                self.date_label.setText(today.strftime("%d.%m.%Y"))
+            except Exception:
+                self.date_label.setText("")
+
+    def _save_geometry_qsettings(self) -> None:
+        """Persist geometry to QSettings without touching disk-heavy JSON."""
+        try:
+            geometry_bytes = self.saveGeometry()
+            self._settings_store.setValue("cost_center/geometry", geometry_bytes)
+            self._settings_store.sync()
+        except Exception:
+            pass
 
     def _build_tables_tab(self) -> QWidget:
         """Build the tables tab content."""
         tab = QWidget()
-        layout = QVBoxLayout(tab)
+        tab_layout = QVBoxLayout(tab)
+        tab_layout.setContentsMargins(0, 0, 0, 0)
+        tab_layout.setSpacing(0)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        content = QWidget()
+        layout = QVBoxLayout(content)
         layout.setSpacing(16)
         layout.setContentsMargins(16, 16, 16, 16)
         
         # Budget Summary Table
         layout.addWidget(self._section_label("סיכום תקציב חודשי"))
+
+        counters_row = QHBoxLayout()
+        counters_row.setSpacing(12)
+        self.run_count_label = QLabel()
+        self.metadata_count_label = QLabel()
+        self.visual_metadata_count_label = QLabel()
+        for lbl in (self.run_count_label, self.metadata_count_label, self.visual_metadata_count_label):
+            lbl.setStyleSheet(
+                "font-size: 14px; font-weight: 600; color: #38bdf8; "
+                "background: #1e293b; padding: 8px 12px; border-radius: 8px;"
+            )
+            counters_row.addWidget(lbl)
+        counters_row.addStretch(1)
+        layout.addLayout(counters_row)
         self.budget_table = self._create_budget_table()
+        self.budget_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.budget_table.setMaximumHeight(220)
         layout.addWidget(self.budget_table)
         
         # Budget limits controls (grid for clean alignment)
@@ -311,6 +460,7 @@ class CostCenterDialog(QDialog):
         self.reset_day_azure_spin.setToolTip("היום בחודש בו Azure Speech/OpenAI מתאפסים (1-31)")
         limits_grid.addWidget(QLabel("יום איפוס Azure:"), 1, 0)
         limits_grid.addWidget(self.reset_day_azure_spin, 1, 1)
+        self.reset_day_azure_spin.valueChanged.connect(lambda _: self._persist_reset_days())
 
         self.reset_day_gemini_spin = QSpinBox()
         self.reset_day_gemini_spin.setRange(1, 31)
@@ -318,6 +468,7 @@ class CostCenterDialog(QDialog):
         self.reset_day_gemini_spin.setToolTip("היום בחודש בו Gemini מתאפס (1-31)")
         limits_grid.addWidget(QLabel("יום איפוס Gemini:"), 1, 2)
         limits_grid.addWidget(self.reset_day_gemini_spin, 1, 3)
+        self.reset_day_gemini_spin.valueChanged.connect(lambda _: self._persist_reset_days())
 
         self.reset_day_elevenlabs_spin = QSpinBox()
         self.reset_day_elevenlabs_spin.setRange(1, 31)
@@ -325,6 +476,7 @@ class CostCenterDialog(QDialog):
         self.reset_day_elevenlabs_spin.setToolTip("היום בחודש בו ElevenLabs מתאפס (1-31)")
         limits_grid.addWidget(QLabel("יום איפוס ElevenLabs:"), 1, 4)
         limits_grid.addWidget(self.reset_day_elevenlabs_spin, 1, 5)
+        self.reset_day_elevenlabs_spin.valueChanged.connect(lambda _: self._persist_reset_days())
         
         save_btn = QPushButton("שמור מגבלות")
         save_btn.clicked.connect(self._save_limits)
@@ -337,8 +489,12 @@ class CostCenterDialog(QDialog):
         self.history_table = self._create_history_table()
         # Lower minimum to allow dialog to shrink on shorter screens
         self.history_table.setMinimumHeight(140)
+        self.history_table.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         layout.addWidget(self.history_table, 1)
-        
+        layout.addStretch(1)
+
+        scroll.setWidget(content)
+        tab_layout.addWidget(scroll)
         return tab
 
     def _create_budget_table(self) -> QTableWidget:
@@ -545,6 +701,8 @@ class CostCenterDialog(QDialog):
 
     def _refresh_all(self) -> None:
         """Refresh all components."""
+        self._update_date_display()
+        self._update_counters()
         self._fill_budget_table()
         self._fill_history_table()
         self._refresh_chart()
@@ -1098,6 +1256,10 @@ class CostCenterDialog(QDialog):
                     "monthly_elevenlabs_character_limit": self.settings.monthly_elevenlabs_character_limit,
                 }
             )
+            self._settings_store.setValue("cost_center/reset_day_azure", self.settings.reset_day_azure)
+            self._settings_store.setValue("cost_center/reset_day_gemini", self.settings.reset_day_gemini)
+            self._settings_store.setValue("cost_center/reset_day_elevenlabs", self.settings.reset_day_elevenlabs)
+            self._settings_store.sync()
         except Exception:
             # Non-fatal: continue without blocking UI
             pass
@@ -1224,10 +1386,12 @@ class CostCenterDialog(QDialog):
     def closeEvent(self, event) -> None:
         """Persist cost center UI state on close."""
         try:
-            geo_hex = bytes(self.saveGeometry().toHex()).decode("ascii")
-            scroll_val = (
-                self.scroll_area.verticalScrollBar().value() if getattr(self, "scroll_area", None) else 0
-            )
+            # Ensure reset days are flushed even if the save button was not used
+            self._persist_reset_days()
+
+            geometry_bytes = self.saveGeometry()
+            geo_hex = bytes(geometry_bytes.toHex()).decode("ascii")
+            scroll_val = 0
             tab_idx = self.tabs.currentIndex() if getattr(self, "tabs", None) else 0
             self.settings.save_ui_preferences(
                 {
@@ -1236,6 +1400,21 @@ class CostCenterDialog(QDialog):
                     "cost_center_scroll_pos": int(scroll_val),
                 }
             )
+
+            self._settings_store.setValue("cost_center/geometry", geometry_bytes)
+            self._settings_store.setValue("cost_center/tab_index", int(tab_idx))
+            self._settings_store.setValue("cost_center/scroll_pos", int(scroll_val))
+            self._settings_store.sync()
         except Exception as exc:
             print(f"[CostCenterDialog] Failed to save UI state: {exc}")
         super().closeEvent(event)
+
+    def moveEvent(self, event) -> None:
+        """Persist geometry when the window is moved."""
+        self._save_geometry_qsettings()
+        super().moveEvent(event)
+
+    def resizeEvent(self, event) -> None:
+        """Persist geometry when the window is resized."""
+        self._save_geometry_qsettings()
+        super().resizeEvent(event)
