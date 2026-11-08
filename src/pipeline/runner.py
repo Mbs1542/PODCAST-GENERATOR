@@ -10,7 +10,10 @@ from typing import Dict, List, Optional
 from ..audio import PodcastStitcher, SpeechSynthesizer, create_tts_synthesizer
 from ..dialogue import DialogueGenerator
 from ..metadata import MetadataIngestor, MetadataChatSession
-from ..outputs import SlideDeckExporter, StoryExporter
+try:
+    from ..outputs import SlideDeckExporter, StoryExporter
+except ImportError:  # src/outputs was never committed (an "outputs/" gitignore rule hid it)
+    SlideDeckExporter = StoryExporter = None
 from ..utils import (
     CostTracker,
     HistoryManager,
@@ -78,8 +81,8 @@ class LecturePipeline:
         self.google_ai = GoogleAIVisualGenerator(self.settings)
         self.video = VideoComposer(self.settings)
         self.history = HistoryManager(self.settings.output_base_dir)
-        self.deck_exporter = SlideDeckExporter()
-        self.story_exporter = StoryExporter()
+        self.deck_exporter = SlideDeckExporter() if SlideDeckExporter else None
+        self.story_exporter = StoryExporter() if StoryExporter else None
         self.quality_checker = QualityChecker(self.settings)
         
         init_elapsed = time.time() - init_start
@@ -814,9 +817,7 @@ class LecturePipeline:
                     )
                     run_paths.log(f"❌ Video composition failed: {exc}")
                     raise
-                        run_paths.log(f"Fallback slide rendering failed: {fallback_exc}")
-                        raise
-                    
+
                 self._stage_times["video_composition"] = time.time() - stage_start
                 timing.checkpoint("video_composition")
             else:
@@ -888,7 +889,9 @@ class LecturePipeline:
                     run_paths.log(f"AI quality enhancement skipped: {enh_exc}")
 
             # Stage 6: PPTX export (optional)
-            if export_ppt:
+            if export_ppt and self.deck_exporter is None:
+                run_paths.log("Slide deck export skipped: src/outputs is missing from this installation.")
+            elif export_ppt:
                 stage_start = time.time()
                 ppt_path = run_paths.run_dir / "summary.pptx"
                 self.logger.info("[LecturePipeline.run] STAGE: PPTX export")
@@ -905,7 +908,8 @@ class LecturePipeline:
 
             # Stage 7: Story export
             stage_start = time.time()
-            story_path = self.story_exporter.export(metadata, dialogue_json, run_paths.run_dir)
+            if self.story_exporter is not None:
+                story_path = self.story_exporter.export(metadata, dialogue_json, run_paths.run_dir)
             self._stage_times["story_export"] = time.time() - stage_start
             timing.checkpoint("story_export")
             

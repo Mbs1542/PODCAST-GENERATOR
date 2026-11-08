@@ -23,9 +23,9 @@ from .logging import get_logger
 
 # Optional AI backends
 try:
-    import google.generativeai as genai  # type: ignore
+    from .gemini import GeminiModel
 except Exception:  # pragma: no cover - optional dependency
-    genai = None
+    GeminiModel = None
 try:
     from openai import AzureOpenAI  # type: ignore
 except Exception:  # pragma: no cover - optional dependency
@@ -337,11 +337,9 @@ Return ONLY valid JSON in this format:
             self.logger.debug("Azure OpenAI not configured; skipping.")
 
         # Fallback to Gemini
-        if genai and getattr(self.settings, "gemini_api_key", ""):
+        if GeminiModel and getattr(self.settings, "gemini_api_key", ""):
             try:
-                genai.configure(api_key=self.settings.gemini_api_key)
-                model_name = getattr(self.settings, "gemini_model", "") or "gemini-1.5-flash"
-                model = genai.GenerativeModel(model_name)
+                model = GeminiModel(self.settings.gemini_api_key, getattr(self.settings, "gemini_model", ""))
                 resp = model.generate_content(prompt, generation_config={"temperature": 0.3})
                 text = getattr(resp, "text", "") or ""
                 return text.strip()

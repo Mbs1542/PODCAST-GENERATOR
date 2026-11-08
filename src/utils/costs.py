@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 from typing import Dict
 
-from src.utils.pricing import PRICING
+from src.utils.pricing import PRICING, gemini_tts_cost, llm_token_cost
 
 
 @dataclass
@@ -39,14 +39,23 @@ class CostTracker:
     tts_characters: int = 0  # Azure TTS characters (for backward compatibility)
     elevenlabs_characters: int = 0  # ElevenLabs TTS characters
     visual_cost_usd: float = 0.0  # Imagen/VEO visual generation cost accumulator
-    
+    gemini_tts_seconds: float = 0.0
+    # Token usage per model, priced by that model's own rate: {model: [prompt, completion]}
+    model_tokens: Dict[str, list] = field(default_factory=dict)
+
     # Provider tracking
     tts_provider: str = "azure"  # Current TTS provider being used
 
-    def add_openai_usage(self, prompt_tokens: int, completion_tokens: int) -> None:
-        """Add OpenAI token usage."""
+    def add_openai_usage(self, prompt_tokens: int, completion_tokens: int, model: str = "") -> None:
+        """Add LLM token usage. `model` picks the price (Gemini or Azure GPT); thinking tokens count as completion."""
         self.prompt_tokens += prompt_tokens
         self.completion_tokens += completion_tokens
+        counts = self.model_tokens.setdefault(model or "azure", [0, 0])
+        counts[0] += prompt_tokens
+        counts[1] += completion_tokens
+
+    def add_gemini_tts_seconds(self, seconds: float) -> None:
+        self.gemini_tts_seconds += max(0.0, float(seconds))
 
     def add_tts_characters(self, chars: int) -> None:
         """Add Azure TTS character usage (backward compatible)."""
@@ -66,7 +75,11 @@ class CostTracker:
 
     @property
     def openai_cost(self) -> float:
-        """Calculate total OpenAI cost."""
+        """Total LLM cost (the name is historical: it covers Gemini and local models too)."""
+        if self.model_tokens:
+            return round(sum(llm_token_cost(m, p, c) if m != "azure" else
+                             (p / 1000) * self.openai_prompt_cost_per_1k + (c / 1000) * self.openai_completion_cost_per_1k
+                             for m, (p, c) in self.model_tokens.items()), 4)
         prompt_cost = (self.prompt_tokens / 1000) * self.openai_prompt_cost_per_1k
         completion_cost = (self.completion_tokens / 1000) * self.openai_completion_cost_per_1k
         return round(prompt_cost + completion_cost, 4)
@@ -83,8 +96,8 @@ class CostTracker:
 
     @property
     def tts_cost(self) -> float:
-        """Calculate total TTS cost (both providers)."""
-        return round(self.azure_tts_cost + self.elevenlabs_tts_cost, 4)
+        """Calculate total TTS cost (all providers)."""
+        return round(self.azure_tts_cost + self.elevenlabs_tts_cost + gemini_tts_cost(self.gemini_tts_seconds), 4)
 
     @property
     def total_tts_characters(self) -> int:

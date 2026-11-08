@@ -102,13 +102,6 @@ class GoogleAIVisualGenerator:
             self.logger.warning("GEMINI_API_KEY not configured. Google AI visuals will be disabled.")
             return
         
-        # Configure google.generativeai if available (needed for tests and legacy clients)
-        try:
-            import google.generativeai as genai_config  # type: ignore
-            genai_config.configure(api_key=self.settings.gemini_api_key)
-        except ImportError:
-            pass
-
         try:
             from google import genai  # type: ignore
             from google.genai import types  # type: ignore

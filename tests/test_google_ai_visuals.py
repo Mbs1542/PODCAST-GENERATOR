@@ -39,11 +39,11 @@ class TestGoogleAIVisualGeneratorInit:
         mock_settings.imagen_model = "imagen-4.0-generate-001"
         mock_settings.veo_model = "veo-2.0-generate-001"
         
-        with patch('google.generativeai.configure') as mock_configure:
-            generator = GoogleAIVisualGenerator(settings=mock_settings)
-            
-            # Should have called configure with the API key
-            mock_configure.assert_called_once_with(api_key="test-api-key")
+        with patch('google.genai.Client') as mock_client:
+            GoogleAIVisualGenerator(settings=mock_settings)
+
+            # The google-genai client is created with the API key
+            mock_client.assert_called_once_with(api_key="test-api-key")
 
 
 class TestCostEstimation:

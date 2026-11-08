@@ -1,0 +1,4 @@
+# CUDA runtime libraries for GPU transcription on NVIDIA cards (about 1 GB).
+# Installed only when an NVIDIA GPU is detected; without them transcription runs on the CPU.
+nvidia-cublas-cu12
+nvidia-cudnn-cu12>=9,<10

@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
+import tempfile
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, Optional
@@ -43,20 +46,39 @@ class PodcastStitcher:
             final_mix = final_mix.set_frame_rate(44100)
 
         run_paths.final_audio_path.parent.mkdir(parents=True, exist_ok=True)
-        # Export with higher quality: stereo (better for voice clarity) and higher bitrate
-        # Use 192k bitrate for better quality, especially for Hebrew speech
-        final_mix.export(
-            run_paths.final_audio_path, 
-            format="mp3", 
-            bitrate="192k",
-            parameters=["-ar", "44100", "-ac", "2"]  # 44.1kHz sample rate, stereo
-        )
+        # Podcast loudness standard (-16 LUFS, -1.5 dBTP): chunks from different generations and the
+        # music then play at one even level, like a produced show. Falls back to peak normalization.
+        # 44.1 kHz stereo at 192k
+        if not self._export_loudness_normalized(final_mix, run_paths.final_audio_path):
+            final_mix.export(
+                run_paths.final_audio_path,
+                format="mp3",
+                bitrate="192k",
+                parameters=["-ar", "44100", "-ac", "2"],
+            )
 
         duration_minutes = round(final_mix.duration_seconds / 60, 2)
         self._write_metadata(metadata, run_paths, duration_minutes)
 
         run_paths.log(f"Audio stitching complete. Duration: {duration_minutes} min.")
         return run_paths.final_audio_path
+
+    def _export_loudness_normalized(self, mix: AudioSegment, target: Path) -> bool:
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            return False
+        with tempfile.TemporaryDirectory(prefix="mbs-mix-") as folder:
+            raw = Path(folder) / "mix.wav"
+            mix.export(raw, format="wav")
+            result = subprocess.run(
+                [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", str(raw),
+                 "-af", "loudnorm=I=-16:TP=-1.5:LRA=11", "-ar", "44100", "-ac", "2", "-b:a", "192k", str(target)],
+                capture_output=True, text=True,
+            )
+        if result.returncode != 0 or not target.exists():
+            self.logger.warning("Loudness normalization failed, using peak normalization: %s", result.stderr[-300:])
+            return False
+        return True
 
     def _load_music(self, path: Path, duration_ms: int) -> AudioSegment:
         if not path or not path.exists():

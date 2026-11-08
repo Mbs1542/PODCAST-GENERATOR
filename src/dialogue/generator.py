@@ -53,11 +53,12 @@ class DialogueGenerator:
 
     def __post_init__(self) -> None:
         self.logger = get_logger(self.__class__.__name__)
+        # The legacy single-prompt path needs Azure; the v2 engine uses whichever writer is configured
         self.client = AzureOpenAI(
             api_key=self.settings.openai_api_key,
             api_version=self.settings.openai_api_version,
             azure_endpoint=self.settings.openai_endpoint,
-        )
+        ) if self.settings.openai_endpoint else None
         self.token_chunker = TokenChunker()
         self._validator = Draft7Validator(DIALOGUE_SCHEMA)
         if self.cost_tracker is None:
@@ -76,6 +77,15 @@ class DialogueGenerator:
     ) -> Path:
         """Generate or load cached dialogue JSON."""
         run_paths.log("Starting dialogue generation.")
+        if str(getattr(self.settings, "dialogue_engine", "v2")).lower() == "v2":
+            try:
+                return self._generate_v2(transcript_text, metadata, run_paths, force)
+            except Exception as exc:
+                if self.client is None:
+                    raise  # no Azure for the legacy fallback: report the engine's own error
+                self.logger.exception("Script engine v2 failed; falling back to the legacy generator.")
+                run_paths.log(f"Script engine v2 failed ({exc}); falling back to the legacy generator.")
+
         content_hash = hashlib.sha256(transcript_text.encode("utf-8")).hexdigest()
         cache_file = run_paths.cache_dir / f"{content_hash}.json"
 
@@ -95,6 +105,27 @@ class DialogueGenerator:
             cache_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
         run_paths.log("Dialogue generation completed.")
+        return run_paths.dialogue_path
+
+    def _generate_v2(
+        self,
+        transcript_text: str,
+        metadata: Dict[str, Any],
+        run_paths: RunPaths,
+        force: bool,
+    ) -> Path:
+        """Staged engine: clean -> lesson profile -> episode plan -> segment writing + verification."""
+        from ..engine import ScriptEngine
+
+        engine = ScriptEngine(self.settings, self.cost_tracker, log=run_paths.log)
+        result = engine.run(transcript_text, metadata, run_paths.run_dir / "engine", force=force)
+        run_paths.dialogue_path.write_text(json.dumps(result.dialogue, ensure_ascii=False, indent=2), encoding="utf-8")
+        quality = result.dialogue["metadata"]["quality"]
+        run_paths.log(
+            f"Dialogue generation completed (engine v2): {quality['estimated_minutes']} min, "
+            f"core concept coverage {quality['core_concept_coverage']:.0%}, "
+            f"segments with open issues: {quality['segments_with_open_issues'] or 'none'}"
+        )
         return run_paths.dialogue_path
 
     def _prepare_content(self, transcript_text: str) -> str:

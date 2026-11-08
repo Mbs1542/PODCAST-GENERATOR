@@ -48,12 +48,12 @@ class ElevenLabsSpeechSynthesizer:
     VOICE_MAP = {
         "Roee": {
             "voice_id": "pNInz6obpgDQGcFmaJgB",  # Adam - deep male voice
-            "model": "eleven_multilingual_v2",
+            "model": "eleven_v3",
             "hebrew_support": True,
         },
         "Noa": {
             "voice_id": "21m00Tcm4TlvDq8ikWAM",  # Rachel - warm female voice
-            "model": "eleven_multilingual_v2",
+            "model": "eleven_v3",
             "hebrew_support": True,
         },
     }
@@ -85,15 +85,11 @@ class ElevenLabsSpeechSynthesizer:
         "use_speaker_boost": True,
     }
 
-    # ElevenLabs models that are guaranteed to handle Hebrew gracefully without extra flags
-    HEBREW_SAFE_MODELS = {
-        "eleven_turbo_v2_5",
-        "eleven_turbo_v2",
-        "eleven_flash_v2_5",
-        "eleven_multilingual_v3",
-        "eleven_multilingual_v2",
-    }
-    HEBREW_PREFERRED_MODEL = "eleven_multilingual_v2"
+    # Per ElevenLabs' model docs only the v3/v4 generation reads Hebrew; Multilingual v2,
+    # Flash v2.5 and Turbo v2.5 do not list it. eleven_v4 is served only by the Text to
+    # Dialogue API (see dialogue_tts.py), so single-line synthesis uses eleven_v3.
+    HEBREW_SAFE_MODELS = {"eleven_v3"}
+    HEBREW_PREFERRED_MODEL = "eleven_v3"
 
     def __init__(
         self,
@@ -272,12 +268,12 @@ class ElevenLabsSpeechSynthesizer:
         latin_chars = sum(1 for c in text if ("A" <= c <= "Z") or ("a" <= c <= "z"))
         is_hebrew = hebrew_chars > 0 or detect_language(text) == "he"
 
-        normalized_text = normalize_hebrew_text(text) if is_hebrew else text
+        normalized_text = self.normalize_hebrew_text(text) if is_hebrew else text
 
-        # Force Hebrew-preferred model for any Hebrew content
+        # Hebrew needs a model that reads it; keep a configured one only if it does
         requested_model = voice_config.get("model", self.HEBREW_PREFERRED_MODEL)
         if is_hebrew:
-            model_id = self.HEBREW_PREFERRED_MODEL
+            model_id = requested_model if requested_model in self.HEBREW_SAFE_MODELS else self.HEBREW_PREFERRED_MODEL
         else:
             model_id = requested_model
 
@@ -321,8 +317,8 @@ class ElevenLabsSpeechSynthesizer:
                 status = detail_info.get("status", "").lower()
                 message = str(detail_info.get("message", "")).lower()
                 if "unsupported_language" in status or "unsupported language" in message:
-                    fallback_model = "eleven_turbo_v2_5" if is_hebrew else "eleven_turbo_v2_5"
-                    # If preferred Hebrew model failed, try a Hebrew-safe turbo variant
+                    fallback_model = self.HEBREW_PREFERRED_MODEL
+                    # A voice override may name an older model that has no Hebrew; retry on v3
                     if model_id != fallback_model:
                         self.logger.warning(
                             "ElevenLabs reported unsupported_language for model '%s'. Retrying with '%s'.",
@@ -403,7 +399,12 @@ class ElevenLabsSpeechSynthesizer:
                 "Invalid ElevenLabs override for %s (missing voice_id). Falling back to profile.", speaker
             )
         
-        # Try to get from voice profile first
+        # Voices chosen in the settings screen (ELEVENLABS_VOICE_ROEE / _NOA)
+        configured = getattr(self.settings, f"elevenlabs_voice_{speaker.lower()}", "")
+        if isinstance(configured, str) and configured.strip():
+            return {"voice_id": configured, "model": self.HEBREW_PREFERRED_MODEL}
+
+        # Then the voice profile
         profile_voice = self.voice_profile.get_elevenlabs_voice(speaker, language)
         if profile_voice:
             return profile_voice
@@ -411,6 +412,7 @@ class ElevenLabsSpeechSynthesizer:
         # Fall back to default voice map
         return self.VOICE_MAP.get(speaker, self.VOICE_MAP["Roee"])
 
+    @staticmethod
     def _is_quota_error(exc: ApiError) -> bool:
         """Check whether an ElevenLabs ApiError corresponds to quota exhaustion."""
         if not isinstance(exc, ApiError):

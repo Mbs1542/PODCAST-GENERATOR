@@ -1,0 +1,6 @@
+# Hebrew video transcriber (ivrit.ai Whisper via faster-whisper)
+faster-whisper>=1.1.0
+huggingface_hub
+yt-dlp
+# faster-whisper 1.2.x passes av.open(metadata_errors=...), which newer PyAV removed; manim needs av>=15
+av>=15,<18

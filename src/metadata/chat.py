@@ -9,7 +9,6 @@ from pathlib import Path
 import re
 from typing import Any, Dict, List, Literal, Optional, Tuple
 
-import google.generativeai as genai
 from openai import AzureOpenAI
 
 from ..utils import Settings, get_logger
@@ -181,10 +180,10 @@ class MetadataChatSession:
         self.logger.info("[MetadataChatSession.__init__] Initializing chat session")
 
         if settings.gemini_api_key:
-            genai.configure(api_key=settings.gemini_api_key)
-            model_name = settings.gemini_model or "gemini-1.5-flash"
-            self._gemini_model = genai.GenerativeModel(model_name)
-            self.logger.debug("[MetadataChatSession.__init__] Gemini configured: %s", model_name)
+            from ..utils.gemini import GeminiModel
+
+            self._gemini_model = GeminiModel(settings.gemini_api_key, settings.gemini_model)
+            self.logger.debug("[MetadataChatSession.__init__] Gemini configured: %s", self._gemini_model.model_name)
         else:
             self.logger.warning("GEMINI_API_KEY missing – falling back to Azure for metadata chat.")
 

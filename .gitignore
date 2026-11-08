@@ -1,4 +1,5 @@
-outputs/
+# Only the top-level outputs folder: a bare 'outputs/' also ignored src/outputs (the exporters)
+/outputs/
 venv/
 .venv/
 __pycache__/
@@ -12,4 +13,11 @@ voice_profiles.json
 *.mkv
 *.log
 processing_log.txt
-
+# Installed by installer/bootstrap.ps1 or built locally
+/tools/
+/models/
+/dist/
+/logs/
+.env
+# Evaluation: partial lesson drafts and the per-run work cache
+data/eval/lessons/_drafts/

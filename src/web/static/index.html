@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="mbs-token" content="__MBS_TOKEN__">
+<title>M.B.S Studio</title>
+<link rel="icon" href="/logo">
+<script>
+  // Apply the saved theme before the first paint, so a dark theme never flashes white
+  try {
+    var look = JSON.parse(localStorage.getItem("mbs-look") || "{}");
+    if (look.theme && look.theme !== "auto") document.documentElement.dataset.theme = look.theme;
+    if (look.accent) document.documentElement.dataset.accent = look.accent;
+  } catch (e) { /* storage blocked: the app syncs from the server */ }
+</script>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="#/">
+    <img src="/logo" alt="" class="brand-logo" id="brand-logo">
+    <span>M.B.S Studio</span>
+  </a>
+  <nav class="nav">
+    <a href="#/" data-nav="projects">הפרויקטים שלי</a>
+    <a href="#/look" data-nav="look">עיצוב ומיתוג</a>
+    <a href="#/settings" data-nav="settings">הגדרות</a>
+    <a href="/guide" target="_blank" rel="noopener">מדריך</a>
+  </nav>
+  <a href="#/settings" class="setup-pill" id="setup-pill" hidden>חסרות הגדרות</a>
+  <button class="theme-toggle" id="theme-toggle" type="button" aria-label="ערכת נושא" title="ערכת נושא"></button>
+</header>
+<main id="app" class="container" aria-live="polite"></main>
+<div id="toast" class="toast" role="status" hidden></div>
+<script src="/static/app.js"></script>
+</body>
+</html>

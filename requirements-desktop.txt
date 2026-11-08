@@ -1,0 +1,4 @@
+﻿# Legacy desktop GUI (src/gui, PyQt6). The default UI is the browser app (python -m src.web).
+# PyQt6 is blocked by Windows Smart App Control on machines where it is enabled.
+PyQt6>=6.7.0
+pyqtgraph>=0.13.3

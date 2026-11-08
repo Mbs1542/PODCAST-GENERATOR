@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass, field
 import json
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from dotenv import load_dotenv
 
@@ -13,6 +13,72 @@ def _to_bool(value: Optional[str], default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+TTS_PROVIDERS = ("azure", "elevenlabs", "gemini")
+
+
+def read_saved_tts_provider(ui_config_path: Path) -> str:
+    """Return the TTS provider last chosen in the app (config/ui_config.json or legacy ui_prefs.json)."""
+    for path in (ui_config_path, Path("config/ui_prefs.json")):
+        try:
+            value = json.loads(path.read_text(encoding="utf-8")).get("default_tts_provider", "")
+        except (OSError, ValueError, AttributeError):
+            continue
+        if value:
+            return str(value).lower()
+    return ""
+
+
+def resolve_tts_provider(
+    requested: str,
+    has_azure: bool,
+    has_elevenlabs: bool,
+    saved_preference: str = "",
+    has_gemini: bool = False,
+) -> Tuple[str, str]:
+    """Pick the TTS provider from what is actually configured, and say why.
+
+    Order: an explicit DEFAULT_TTS_PROVIDER that has keys, then the choice saved in
+    the app, then whichever provider has keys. Never picks a provider without keys
+    when another one has them. Gemini is chosen only on request or as the last
+    resort: a Gemini key is often there just for images, so it must not take over
+    the voices from Azure or ElevenLabs by itself.
+    """
+    requested = (requested or "").strip().lower()
+    keyed = {"azure": has_azure, "elevenlabs": has_elevenlabs, "gemini": has_gemini}
+    if keyed.get(requested):
+        return requested, "set by DEFAULT_TTS_PROVIDER"
+    saved = (saved_preference or "").strip().lower()
+    if keyed.get(saved):
+        return saved, "last choice saved in the app settings"
+    available = [name for name in ("azure", "elevenlabs") if keyed[name]]
+    prefix = f"DEFAULT_TTS_PROVIDER={requested} has no keys; " if requested in TTS_PROVIDERS else ""
+    if len(available) == 1:
+        return available[0], f"{prefix}only provider with keys in .env"
+    if available:
+        return "azure", "both providers have keys; defaulting to Azure"
+    if has_gemini:
+        return "gemini", f"{prefix}only provider with keys in .env"
+    return (requested if requested in TTS_PROVIDERS else "azure"), "no TTS keys found in .env"
+
+
+LLM_PROVIDERS = ("gemini", "azure", "local")
+
+
+def resolve_llm_provider(requested: str, has_azure: bool, has_gemini: bool) -> str:
+    """Which model writes the scripts. An explicit choice wins; otherwise whichever has keys.
+
+    With both keys, Azure stays the writer so existing setups keep behaving as before.
+    """
+    requested = (requested or "").strip().lower()
+    if requested in LLM_PROVIDERS:
+        return requested
+    if has_azure:
+        return "azure"
+    if has_gemini:
+        return "gemini"
+    return "azure"
 
 
 @dataclass(slots=True)
@@ -49,7 +115,7 @@ class Settings:
     google_cloud_location: str = field(default_factory=lambda: os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"))
 
     gemini_api_key: str = field(default_factory=lambda: os.getenv("GEMINI_API_KEY", ""))
-    gemini_model: str = field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-1.5-flash"))
+    gemini_model: str = field(default_factory=lambda: os.getenv("GEMINI_MODEL", "gemini-3.8-flash"))
     
     # Google AI Visual Generation settings (Imagen 4 + VEO)
     imagen_model: str = field(default_factory=lambda: os.getenv("IMAGEN_MODEL", "imagen-4.0-generate-001"))
@@ -67,7 +133,7 @@ class Settings:
     
     # ElevenLabs TTS settings
     elevenlabs_api_key: str = field(default_factory=lambda: os.getenv("ELEVENLABS_API_KEY", ""))
-    default_tts_provider: str = field(default_factory=lambda: os.getenv("DEFAULT_TTS_PROVIDER", "azure"))
+    default_tts_provider: str = field(default_factory=lambda: os.getenv("DEFAULT_TTS_PROVIDER", "auto"))
     monthly_elevenlabs_character_limit: int = field(
         default_factory=lambda: int(os.getenv("MONTHLY_ELEVENLABS_CHARACTER_LIMIT", "100000"))
     )
@@ -140,16 +206,57 @@ class Settings:
     auto_apply_ai_fixes: bool = field(
         default_factory=lambda: _to_bool(os.getenv("AUTO_APPLY_AI_FIXES"), False)
     )
-    
+
+    # Which model writes the scripts: gemini, azure, local, or auto (by the keys present)
+    llm_provider: str = field(default_factory=lambda: os.getenv("LLM_PROVIDER", "auto"))
+    gemini_text_model: str = field(default_factory=lambda: os.getenv("GEMINI_TEXT_MODEL") or "gemini-3.8-flash")
+
+    # Script engine v2: clean -> lesson profile -> episode plan -> segment writing -> verification
+    dialogue_engine: str = field(default_factory=lambda: os.getenv("DIALOGUE_ENGINE", "v2"))
+    podcast_format: str = field(default_factory=lambda: os.getenv("PODCAST_FORMAT", "auto"))
+    podcast_target_minutes: float = field(
+        default_factory=lambda: float(os.getenv("PODCAST_TARGET_MINUTES", "0") or 0)
+    )
+    script_max_revisions: int = field(default_factory=lambda: int(os.getenv("SCRIPT_MAX_REVISIONS", "1")))
+    verify_grounding: bool = field(default_factory=lambda: _to_bool(os.getenv("VERIFY_GROUNDING"), True))
+    # Local checker model (Ollama). auto = use it when running, on = require it, off = never
+    local_llm_mode: str = field(default_factory=lambda: os.getenv("LOCAL_LLM", "auto"))
+    local_llm_base_url: str = field(default_factory=lambda: os.getenv("LOCAL_LLM_BASE_URL", "http://localhost:11434"))
+    local_llm_model: str = field(default_factory=lambda: os.getenv("LOCAL_LLM_MODEL") or "gemma3:12b")
+    local_llm_context: int = field(default_factory=lambda: int(os.getenv("LOCAL_LLM_CONTEXT", "12288")))
+    # Conversation audio (src/audio/dialogue_tts.py): both hosts rendered together per chunk
+    elevenlabs_model: str = field(default_factory=lambda: os.getenv("ELEVENLABS_MODEL") or "eleven_v4")
+    elevenlabs_voice_roee: str = field(default_factory=lambda: os.getenv("ELEVENLABS_VOICE_ROEE", ""))
+    elevenlabs_voice_noa: str = field(default_factory=lambda: os.getenv("ELEVENLABS_VOICE_NOA", ""))
+    gemini_tts_model: str = field(default_factory=lambda: os.getenv("GEMINI_TTS_MODEL") or "gemini-3.8-flash-tts")
+    gemini_image_model: str = field(default_factory=lambda: os.getenv("GEMINI_IMAGE_MODEL") or "gemini-3.1-flash-image")
+    gemini_voice_roee: str = field(default_factory=lambda: os.getenv("GEMINI_VOICE_ROEE") or "Charon")
+    gemini_voice_noa: str = field(default_factory=lambda: os.getenv("GEMINI_VOICE_NOA") or "Aoede")
+    # What the listener wants emphasized, like NotebookLM's "Customize" box (set per project)
+    podcast_focus: str = ""
+    # The podcast's language, independent of the lecture's: Hebrew unless English is chosen
+    podcast_language: str = field(default_factory=lambda: (os.getenv("PODCAST_LANGUAGE") or "he").strip().lower())
+    # Why default_tts_provider was chosen (see resolve_tts_provider)
+    tts_provider_reason: str = ""
+
     def __post_init__(self) -> None:
-        if not self.openai_endpoint or not self.openai_api_key or not self.openai_deployment:
-            raise ValueError("Azure OpenAI configuration is incomplete. Check .env settings.")
-        # Azure Speech is required only if using Azure TTS
-        if self.default_tts_provider == "azure" and (not self.speech_key or not self.speech_region):
-            raise ValueError("Azure Speech configuration is incomplete. Set AZURE_SPEECH_KEY and AZURE_SPEECH_REGION.")
-        # ElevenLabs API key is required only if using ElevenLabs TTS
-        if self.default_tts_provider == "elevenlabs" and not self.elevenlabs_api_key:
-            raise ValueError("ElevenLabs API key not configured. Set ELEVENLABS_API_KEY.")
+        has_azure_openai = bool(self.openai_endpoint and self.openai_api_key and self.openai_deployment)
+        self.llm_provider = resolve_llm_provider(self.llm_provider, has_azure_openai, bool(self.gemini_api_key))
+        if self.llm_provider == "azure" and not has_azure_openai:
+            raise ValueError(
+                "No model to write scripts: add a Gemini API key, complete the Azure OpenAI details, or choose the local model."
+            )
+        if self.llm_provider == "gemini" and not self.gemini_api_key:
+            raise ValueError("Gemini was chosen to write scripts, but GEMINI_API_KEY is empty.")
+        self.default_tts_provider, self.tts_provider_reason = resolve_tts_provider(
+            requested=self.default_tts_provider,
+            has_azure=self._tts_keys_present("azure"),
+            has_elevenlabs=self._tts_keys_present("elevenlabs"),
+            saved_preference=read_saved_tts_provider(self.ui_preferences_path),
+            has_gemini=self._tts_keys_present("gemini"),
+        )
+        # Voice keys are checked when audio is produced (tts_ready), not here: transcribing and
+        # writing scripts must work before any voice service is set up.
         # Ensure reset day is valid calendar day
         for attr in ("budget_reset_day", "reset_day_azure", "reset_day_gemini", "reset_day_elevenlabs"):
             current = getattr(self, attr, 1) or 1
@@ -157,6 +264,19 @@ class Settings:
         self.output_base_dir.mkdir(parents=True, exist_ok=True)
         self._load_ui_preferences()
         self._normalize_imagen_model()
+
+    def tts_ready(self, provider: Optional[str] = None) -> bool:
+        """Whether the given (or default) TTS provider has its keys."""
+        return self._tts_keys_present(provider or self.default_tts_provider)
+
+    def _tts_keys_present(self, provider: str) -> bool:
+        if provider == "azure":
+            return bool(self.speech_key and self.speech_region)
+        if provider == "elevenlabs":
+            return bool(self.elevenlabs_api_key)
+        if provider == "gemini":
+            return bool(self.gemini_api_key)
+        return False
 
     @classmethod
     def load(cls, dotenv_path: Optional[Path] = None) -> "Settings":
@@ -168,18 +288,18 @@ class Settings:
             openai_endpoint=os.getenv("AZURE_OPENAI_ENDPOINT", ""),
             openai_api_key=os.getenv("AZURE_OPENAI_API_KEY", ""),
             openai_deployment=os.getenv("AZURE_OPENAI_DEPLOYMENT", ""),
-            openai_api_version=os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-01"),
+            openai_api_version=os.getenv("AZURE_OPENAI_API_VERSION") or "2024-02-01",
             speech_key=os.getenv("AZURE_SPEECH_KEY", ""),
             speech_region=os.getenv("AZURE_SPEECH_REGION", ""),
             speech_endpoint=os.getenv("AZURE_SPEECH_ENDPOINT", ""),
             azure_default_voice=os.getenv("AZURE_DEFAULT_VOICE", "he-IL-AvriNeural"),
             gemini_api_key=os.getenv("GEMINI_API_KEY", ""),
-            gemini_model=os.getenv("GEMINI_MODEL", "gemini-1.5-flash"),
+            gemini_model=os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
             imagen_model=os.getenv("IMAGEN_MODEL", "imagen-4.0-generate-001"),
             veo_model=os.getenv("VEO_MODEL", "veo-2.0-generate-001"),
             visual_generator=os.getenv("VISUAL_GENERATOR", "manim"),
             elevenlabs_api_key=os.getenv("ELEVENLABS_API_KEY", ""),
-            default_tts_provider=os.getenv("DEFAULT_TTS_PROVIDER", "azure"),
+            default_tts_provider=os.getenv("DEFAULT_TTS_PROVIDER", "auto"),
             google_cloud_project=os.getenv("GOOGLE_CLOUD_PROJECT"),
             google_cloud_location=os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"),
             target_language=os.getenv("TARGET_LANGUAGE", ""),
@@ -230,7 +350,7 @@ class Settings:
             "imagen-4.0-ultra-generate-001",
         }
         VALID_VEO_MODELS = {"veo-2.0-generate-001"}
-        VALID_TTS_PROVIDERS = {"azure", "elevenlabs"}
+        VALID_TTS_PROVIDERS = set(TTS_PROVIDERS)
         
         for key in (
             "chat_font_family",
@@ -292,6 +412,10 @@ class Settings:
                 elif key == "default_tts_provider" and value not in VALID_TTS_PROVIDERS:
                     print(f"[Settings] Invalid default_tts_provider '{value}', using default 'azure'")
                     value = "azure"
+                elif key == "default_tts_provider" and not self._tts_keys_present(value):
+                    # A saved choice without keys would fail mid-run; keep the provider resolved from .env
+                    print(f"[Settings] Saved TTS provider '{value}' has no keys in .env; using '{self.default_tts_provider}'")
+                    value = self.default_tts_provider
                 elif key == "image_count":
                     # Ensure image_count is within valid range
                     value = max(1, min(20, int(value) if isinstance(value, (int, float)) else 5))

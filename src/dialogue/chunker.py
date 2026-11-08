@@ -33,6 +33,11 @@ class TokenChunker:
             return self._encoder.encode(text)
         return list(range(len(_basic_tokenizer(text))))
 
+    def _tail(self, text: str) -> str:
+        if self._encoder:
+            return self._encoder.decode(self._encoder.encode(text)[-self.overlap_tokens :])
+        return " ".join(text.split()[-self.overlap_tokens :])
+
     def chunk(self, text: str) -> Iterable[str]:
         paragraphs = [p.strip() for p in re.split(r"\n{2,}", text) if p.strip()]
         if not paragraphs:
@@ -49,24 +54,21 @@ class TokenChunker:
                 current_tokens += token_len
                 continue
 
+            overlap = ""
             if current_parts:
-                chunks.append("\n\n".join(current_parts))
-                # start new chunk with overlap tokens from end of paragraph
+                closed = "\n\n".join(current_parts)
+                chunks.append(closed)
+                # carry the tail of the closed chunk into the next one for context
                 if self.overlap_tokens > 0:
-                    overlap_slice = paragraph[-self.overlap_tokens :]
-                    current_parts = [overlap_slice]
-                    current_tokens = len(self._encode(overlap_slice))
-                else:
-                    current_parts = []
-                    current_tokens = 0
+                    overlap = self._tail(closed)
 
             if token_len >= self.max_tokens:
                 chunks.append(paragraph)
                 current_parts = []
                 current_tokens = 0
             else:
-                current_parts = [paragraph]
-                current_tokens = token_len
+                current_parts = [overlap, paragraph] if overlap else [paragraph]
+                current_tokens = token_len + (len(self._encode(overlap)) if overlap else 0)
 
         if current_parts:
             chunks.append("\n\n".join(current_parts))

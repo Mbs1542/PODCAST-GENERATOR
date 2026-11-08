@@ -1,22 +1,17 @@
 @echo off
+:: Starts M.B.S Studio in the browser. The old PyQt desktop GUI: python -m src.gui.app
+:: (needs: pip install -r requirements-desktop.txt)
 
 cd /d "%~dp0"
 
-echo Checking environment...
-
 if not exist ".venv\Scripts\python.exe" (
-    echo [ERROR] Virtual environment not found in .venv!
+    echo [ERROR] Virtual environment not found in .venv
     pause
     exit /b 1
 )
 
-echo Starting Podcast Generator GUI...
-echo Command: python -m src.gui.app
-echo.
-
-:: --- THE CRITICAL LINE ---
-call .venv\Scripts\python.exe -m src.gui.app
-:: -------------------------
+echo Starting M.B.S Studio in your browser...
+call .venv\Scripts\python.exe -m src.web --stay
 
 if %ERRORLEVEL% NEQ 0 (
     echo.

@@ -27,7 +27,7 @@ class MetadataIngestor:
             api_key=settings.openai_api_key,
             api_version=settings.openai_api_version,
             azure_endpoint=settings.openai_endpoint,
-        )
+        ) if settings.openai_endpoint else None
 
     def enrich(
         self,
@@ -41,6 +41,9 @@ class MetadataIngestor:
         urls = [u.strip() for u in urls if u.strip()]
 
         if not material_paths and not urls:
+            return metadata
+        if self.client is None:
+            self.logger.warning("Supporting materials need Azure OpenAI; skipping %d file(s)/URL(s).", len(material_paths) + len(urls))
             return metadata
 
         if material_paths:
@@ -150,7 +153,7 @@ class MetadataIngestor:
 
     def _summarize(self, text: str, title: str) -> Dict:
         truncated = textwrap.shorten(text, width=8000, placeholder=" ...")
-        prompt = f"""You are an assistant that extracts actionable study metadata from supporting materials for Azure lectures.
+        prompt = f"""You are an assistant that extracts actionable study metadata from supporting materials for a lecture.
 Return JSON with keys:
 - "title": short title
 - "summary": concise Hebrew summary
@@ -165,7 +168,7 @@ Material content:
         response = self.client.chat.completions.create(
             model=self.settings.openai_deployment,
             messages=[
-                {"role": "system", "content": "You summarize Azure lecture materials into structured JSON."},
+                {"role": "system", "content": "You summarize lecture materials into structured JSON."},
                 {"role": "user", "content": prompt},
             ],
             temperature=0.3,
