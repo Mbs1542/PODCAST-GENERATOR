@@ -18,7 +18,7 @@ from .llm import LLMClient
 from .prompts import VERIFY_SYSTEM, verify_user_prompt
 from .writer import SPEAKERS, Turn
 
-MAX_TURN_WORDS = 85           # a listener loses the thread in longer single turns
+MAX_TURN_WORDS = 70           # a listener loses the thread in longer single turns
 MAX_AVERAGE_TURN_WORDS = 34   # above this the segment sounds like two lecturers, not a conversation
 MAX_SAME_SPEAKER_RUN = 3
 TOO_SHORT_RATIO = 0.6
@@ -94,6 +94,8 @@ def unspeakable_parts(value: str) -> List[str]:
     """Digits and symbols that text-to-speech reads badly in Hebrew (gendered numbers, '%', '=').
     Four-digit years and digits inside a name (e.g. 'Web3', 'H2O') are fine."""
     found = [m.group(0) for m in _NUMBER_RE.finditer(value) if not _YEAR_RE.match(m.group(0))]
+    # A slash inside an English name (TCP/IP, I/O) is read fine; elsewhere it is not
+    value = re.sub(r"(?<=[A-Za-z])/(?=[A-Za-z])", "", value)
     found += sorted(set(_SYMBOL_RE.findall(value)))
     return found[:4]
 

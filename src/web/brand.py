@@ -63,7 +63,12 @@ SYSTEM_FONTS = [
     ("georgiab.ttf", "Georgia Bold", ["en"]),
     ("verdanab.ttf", "Verdana Bold", ["en"]),
     ("calibrib.ttf", "Calibri Bold", ["en"]),
+    # Linux / the container image (Heebo is baked into the image; DejaVu ships with Debian)
+    ("Heebo.ttf", "Heebo (מובנה)", ["he", "en"]),
+    ("DejaVuSans-Bold.ttf", "DejaVu Sans Bold", ["he", "en"]),
 ]
+
+LINUX_FONT_DIRS = [Path("/usr/share/fonts"), Path("/usr/local/share/fonts")]
 
 DEFAULT_PREFS = {"theme": "auto", "accent": "teal", "logo": "default", "font_he": "auto", "font_en": "auto"}
 
@@ -73,6 +78,8 @@ class BrandError(ValueError):
 
 
 def _windows_font_dirs() -> List[Path]:
+    if os.name != "nt":
+        return []
     dirs = [Path(os.environ.get("WINDIR", r"C:\Windows")) / "Fonts"]
     local = os.environ.get("LOCALAPPDATA")
     if local:
@@ -193,6 +200,11 @@ class BrandStore:
             path = folder / filename
             if path.exists():
                 return path
+        for folder in LINUX_FONT_DIRS:  # Debian keeps fonts in per-package subfolders
+            if folder.is_dir():
+                found = next(folder.rglob(filename), None)
+                if found:
+                    return found
         return None
 
     def font_path(self, font_id: str) -> Optional[Path]:
@@ -216,7 +228,8 @@ class BrandStore:
             return self.font_path(chosen)
         if language == "en" and prefs["font_he"] != "auto":
             return self.font_path(prefs["font_he"])  # Hebrew fonts here all carry Latin too
-        for candidate in ("g:heebo", "g:rubik", "s:arialbd.ttf", "s:segoeuib.ttf", "s:arial.ttf"):
+        for candidate in ("g:heebo", "g:rubik", "s:arialbd.ttf", "s:segoeuib.ttf", "s:arial.ttf",
+                          "s:Heebo.ttf", "s:DejaVuSans-Bold.ttf"):
             path = self.font_path(candidate)
             if path:
                 return path

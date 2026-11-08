@@ -55,6 +55,8 @@ async function api(path, { method = "GET", body } = {}) {
   const res = await fetch(`/api${path}`, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
   let data = null;
   try { data = await res.json(); } catch (_) { /* empty body */ }
+  // Network mode: the sign-in expired or the server restarted; the page shows the sign-in form
+  if (res.status === 401 && data && data.detail === "sign in first") { location.reload(); return new Promise(() => {}); }
   if (!res.ok) throw new Error((data && data.detail) || `שגיאה ${res.status}`);
   return data;
 }

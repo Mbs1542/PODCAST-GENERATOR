@@ -1,0 +1,18 @@
+# Transcription on an NVIDIA GPU. Needs current NVIDIA drivers, and on Windows Docker Desktop
+# with the WSL 2 backend (GPU support is built in); on Linux the NVIDIA Container Toolkit.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+
+services:
+  studio:
+    build:
+      args:
+        GPU: "1"
+    image: mbs-studio:4.1-gpu
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -1,0 +1,22 @@
+# Keys and personal data never go into an image
+.env
+.env.*
+!.env.example
+studio-data/
+outputs/
+models/
+logs/
+data/eval/
+
+# Not needed at runtime
+.git/
+tools/
+dist/
+tests/
+**/__pycache__/
+**/*.pyc
+*.egg-info/
+src/*.egg-info/
+assets/c__Users_*
+installer/*
+!installer/constraints.txt

@@ -85,6 +85,25 @@ def test_pilot_findings_are_checked_in_code():
     assert all("lead" not in s for s in assign_word_budget(plan, "he")["segments"])
 
 
+def test_critique_material_and_english_names_survive():
+    from src.engine.prompts import plan_user_prompt
+    from src.engine.verifier import unspeakable_parts
+
+    assert unspeakable_parts("האינטרנט רץ על TCP/IP ו-I/O") == []
+    assert unspeakable_parts("חצי/חצי") == ["/"]
+
+    prompt = plan_user_prompt({"concepts": []}, "S1: x (10)", "he", 8, (2, 3), "debate", "critique")
+    assert "strongest objection" in prompt and "attributed" in prompt
+
+    from src.engine.profile import normalize_profile
+
+    profile = normalize_profile({"concepts": [{"name": "פיגום", "importance": 3}], "arguments": [
+        {"claim": "AI יחליף מורים", "raised_by": "סטודנט", "objections": ["רוב התלמידים רק יעתיקו"], "section_id": "S2"},
+        {"claim": ""}]}, ["S1", "S2"])
+    assert profile["arguments"] == [{"claim": "AI יחליף מורים", "raised_by": "סטודנט", "support": "",
+                                     "objections": ["רוב התלמידים רק יעתיקו"], "section_id": "S2"}]
+
+
 def test_a_failed_polish_keeps_the_script():
     class Broken:
         model, name = "x", "x"

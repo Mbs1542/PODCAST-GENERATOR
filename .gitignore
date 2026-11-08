@@ -21,3 +21,6 @@ processing_log.txt
 .env
 # Evaluation: partial lesson drafts and the per-run work cache
 data/eval/lessons/_drafts/
+# Container: the password file and the data volume (keys, projects, models)
+studio.env
+/studio-data/

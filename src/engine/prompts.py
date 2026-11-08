@@ -86,8 +86,10 @@ FORMATS: Dict[str, Dict[str, Any]] = {
         "manual_only": True,
         "fits": "examining the lesson itself: what is convincing, what rests on assumptions, what is left open",
         "style": "For each main claim of the lesson: state it fairly, then weigh it - what supports it in the "
-        "lesson, what it assumes, where it stops applying, what the lesson leaves open. Judge only what the "
-        "lesson says; never invent counter-evidence or outside sources.",
+        "lesson, what it assumes, where it stops applying, what the lesson leaves open. Give the objections raised "
+        "in the lesson real airtime and attribute them ('one of the students pushed back...'). A single success "
+        "story is an example, not proof. Judge only what the lesson says; never invent counter-evidence or "
+        "outside sources.",
         "roles": {
             "Roee": "host who presents each claim at its strongest",
             "Noa": "critical co-host who probes assumptions and limits, fairly and with respect",
@@ -144,7 +146,8 @@ _PROFILE_SHAPE = """{
   "examples": [{"description": "an example, analogy, story or demo the lecturer used", "illustrates": "concept name", "section_id": "S3"}],
   "key_facts": [{"claim": "a specific fact, number, rule or distinction stated in the lesson", "section_id": "S2"}],
   "misconceptions": ["confusions the lecturer warned about or that this material typically causes"],
-  "open_questions": ["questions the lecturer raised or left open"]
+  "open_questions": ["questions the lecturer raised or left open"],
+  "arguments": [{"claim": "a claim that was argued or disputed in the lesson", "raised_by": "who made it: the lecturer, a student, a cited view", "support": "the reasoning or evidence given for it", "objections": ["counterpoints, limits or doubts raised in the lesson, with who raised them"], "section_id": "S4"}]
 }"""
 
 
@@ -173,6 +176,7 @@ Rules:
 - List concepts so that each one comes after the concepts it depends on.
 - section_ids refer to the [S#] markers in the transcript.
 - Capture the lecturer's own examples faithfully; they are the most valuable material for the podcast.
+- arguments: only claims that were actually argued, challenged or weighed in the lesson (empty list if none). Keep every objection a student or speaker raised, even if the discussion moved on without resolving it; these are easily lost.
 - Do not add facts that are not in the transcript.
 
 Transcript:
@@ -214,7 +218,20 @@ def plan_user_prompt(
         "time, which examples are used, what the hook is) while staying faithful to the lesson.\n"
         if focus else ""
     )
-    if forced_format:
+    if forced_format == "critique":
+        format_line = (
+            "Use the format: critique. Build each body segment on one claim from the analysis's \"arguments\" "
+            "(or a central claim of the lesson). Its beats must include: the claim at its strongest with the support "
+            "given in the lesson; the strongest objection or limit raised in the lesson, attributed to who raised it; "
+            "and what stays open. Never present one success story or one side as settled when the lesson disputed it."
+        )
+    elif forced_format == "debate":
+        format_line = (
+            "Use the format: debate. Each body segment takes one disputed question from the lesson. Its beats name "
+            "the two positions (Roee defends the first, Noa the second), the lesson's strongest argument for each, "
+            "and the moment they clash. The takeaways say plainly when each view holds, as the lesson suggests."
+        )
+    elif forced_format:
         format_line = f"Use the format: {forced_format}."
     else:
         format_line = (
@@ -281,7 +298,8 @@ What makes it work:
 - Real reactions. Short backchannels and reactions as their own turns, finishing each other's thoughts, the odd moment of gentle humor. A turn may break off with "—" when the other host jumps in.
 - A real knowledge gap in every segment. One host knows this part better; the other genuinely works it out loud: makes a reasonable wrong guess or voices the common misconception, and is corrected warmly with the lesson's own reasoning. Let them swap who knows more when the topic changes.
 - Spontaneous, not scripted. Now and then a self-correction ("כלומר, לא בדיוק—"), a thought cut off by the other host, a quick confirmation turn ("כן.", "נכון.", "אה-הא."). Keep it light: at most one filler or backchannel every few lines; never chains of "אממ".
-- No mechanical habits. Do not praise the other host's questions ("שאלה מצוינת"), do not announce topics ("בוא נדבר על..."), do not say "כמו שאמרנו". End a segment on the click or on a question that pulls toward the next idea, not on a recap.
+- No mechanical habits. Do not praise the other host's questions ("שאלה מצוינת"), do not announce topics ("בוא נדבר על..."), do not say "כמו שאמרנו". No empty hand-off questions ("איזה?", "ומה עוד?", "איך זה עובד?") whose only job is to pass the floor: when a host asks, the question carries a guess, a doubt or an idea. End a segment on the click or on a question that pulls toward the next idea, not on a recap.
+- Talk to the podcast listener, not to the people who sat in the lecture: never address the original class (their internship, their exam on Sunday, "as you saw on the board") unless the listener's own focus says so.
 - Concrete before abstract. Lead with the lecturer's example, a vivid image or an everyday analogy, then name the concept.
 - Signposting and recall. Tell the listener where the conversation is going, connect back to earlier ideas by name, and keep the thread obvious.
 - Rhythm, written for the ear. Most turns are 5-30 words. When something needs explaining, one turn may run to about 60 words, and then the other host reacts, checks or adds before the explanation continues. Break a long explanation across several turns rather than one block. Vary the pace: a few one-word reactions, a few longer turns.
@@ -292,7 +310,7 @@ Grounding:
 - The SOURCE may be in another language. Never translate it sentence by sentence: explain it in natural {name} as if you had learned it yourself, keeping the technical terms that {name} speakers actually use.
 
 Format of each turn:
-- "text" is exactly what is said aloud: no markdown, lists, emojis, stage directions or speaker names. Write numbers as words (a four-digit year may stay in digits), and write symbols, units, formulas and abbreviations the way they are said (e.g. "שבעים אחוז", not "70%"). Never read code or formulas character by character; say what they do. English technical terms may stay in English where the lecturer used them that way.
+- "text" is exactly what is said aloud: no markdown, lists, emojis, stage directions or speaker names. Write numbers as words (a four-digit year may stay in digits), and write symbols, units, formulas and abbreviations the way they are said (e.g. "שבעים אחוז", not "70%"). Never read code or formulas character by character; say what they do. English technical terms, acronyms and code names stay in Latin letters as English (TCP/IP, OSI, MAC, useState, NASA), always written the same way, never spelled out phonetically in Hebrew letters; the voices pronounce them correctly. Avoid Hebrew acronyms with gershayim (אק"ג, הלמ"ס): say the full words or the common English form (ECG).
 - "delivery" is an optional short English hint for the voice when tone matters, e.g. "curious", "excited", "thoughtful", "amused", "surprised", "laughing softly". Leave it empty for neutral lines; use it on roughly a third of the lines."""
 
 
@@ -326,10 +344,22 @@ def write_user_prompt(
             "This is the closing. Tie the ideas together, bring these takeaways up naturally in conversation "
             f"(not as a list): {takeaways}. End with a short goodbye."
         )
+        if episode.get("format") == "debate":
+            kind_rules += " Before the goodbye, the hosts say plainly when each view holds, as the lesson suggests."
     else:
-        kind_rules = "Do not greet or say goodbye, and do not recap earlier segments."
+        kind_rules = (
+            "Do not greet or say goodbye, and do not recap earlier segments. Deliver everything the segment's "
+            "title and goal promise: if they name several things, each one gets real time."
+        )
         lead = segment.get("lead")
-        if lead in ("Roee", "Noa"):
+        if episode.get("format") == "debate":
+            kind_rules += (
+                "\nDebate: the hosts hold opposing positions on this segment's question (Roee the first position "
+                "in the beats, Noa the second). Each argues with the lesson's own reasoning and challenges the "
+                "other directly; no neutral narration, no short feeder questions, and a host concedes a point only "
+                "where the lesson supports it. This replaces the knowledge-gap rule."
+            )
+        elif lead in ("Roee", "Noa"):
             other = "Noa" if lead == "Roee" else "Roee"
             kind_rules += (
                 f"\nIn this segment {lead} carries most of the explanation and {other} is the one working it out: "

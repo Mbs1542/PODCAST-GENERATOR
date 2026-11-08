@@ -4,6 +4,11 @@
     python -m src.web --no-browser    # start without opening a tab
     python -m src.web --stay          # don't exit when the browser tab is closed
 
+In a container or on a server (see docker-compose.yml):
+    MBS_HOST=0.0.0.0 MBS_PORT=8765 python -m src.web --no-browser --stay
+    MBS_ALLOWED_HOSTS=studio.lan,10.8.0.2   other names/addresses the app is opened by (phone over VPN)
+    MBS_ACCESS_KEY=...                      required whenever MBS_ALLOWED_HOSTS names another device
+
 Started from the Start menu with pythonw (no console window), so the server stops by
 itself a few minutes after the last browser tab closes, unless a job is still running.
 """
@@ -49,9 +54,36 @@ def _idle_watch(server, state) -> None:
             server.should_exit = True
 
 
+MIN_ACCESS_KEY_LENGTH = 12
+LOCAL_NAMES = {"127.0.0.1", "localhost", "[::1]"}
+
+
+def network_config(port: int, extra_hosts: str, access_key: str) -> tuple:
+    """The Host headers to accept and whether the setup is safe to start.
+
+    Extra host names (a LAN name, a VPN address, a domain) make the app reachable from
+    other devices, so they require an access key. Returns (allowed_hosts, error or "").
+    """
+    allowed = {f"{name}:{port}" for name in LOCAL_NAMES}
+    remote = []
+    for entry in (h.strip() for h in extra_hosts.split(",")):
+        if not entry:
+            continue
+        name = entry.rsplit(":", 1)[0] if entry.count(":") == 1 else entry
+        allowed |= {entry, f"{name}:{port}", name}
+        if name not in LOCAL_NAMES:
+            remote.append(entry)
+    if remote and len(access_key) < MIN_ACCESS_KEY_LENGTH:
+        return allowed, (f"MBS_ALLOWED_HOSTS ({', '.join(remote)}) makes the app reachable from other devices; "
+                         f"set MBS_ACCESS_KEY to a password of at least {MIN_ACCESS_KEY_LENGTH} characters.")
+    return allowed, ""
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="M.B.S Studio (browser UI)")
-    parser.add_argument("--port", type=int, default=0)
+    parser.add_argument("--port", type=int, default=int(os.environ.get("MBS_PORT") or 0))
+    parser.add_argument("--host", default=os.environ.get("MBS_HOST") or "127.0.0.1",
+                        help="Address to listen on; 0.0.0.0 inside a container.")
     parser.add_argument("--no-browser", action="store_true")
     parser.add_argument("--stay", action="store_true")
     args = parser.parse_args()
@@ -61,10 +93,17 @@ def main() -> None:
         (ROOT / "logs").mkdir(exist_ok=True)
         sys.stdout = sys.stderr = open(ROOT / "logs" / "web.log", "a", encoding="utf-8", buffering=1)
 
-    if not args.port and _running_instance(DEFAULT_PORT):
+    local = args.host in ("127.0.0.1", "localhost")
+    if local and not args.port and _running_instance(DEFAULT_PORT):
         webbrowser.open(f"http://127.0.0.1:{DEFAULT_PORT}/")
         return
     port = args.port or next(p for p in range(DEFAULT_PORT, DEFAULT_PORT + 40) if _port_free(p))
+
+    access_key = os.environ.get("MBS_ACCESS_KEY", "")
+    allowed, error = network_config(port, os.environ.get("MBS_ALLOWED_HOSTS", ""), access_key)
+    if error:
+        print(f"M.B.S Studio will not start: {error}", file=sys.stderr, flush=True)
+        sys.exit(2)
 
     import uvicorn
 
@@ -72,8 +111,13 @@ def main() -> None:
 
     app = create_app(ROOT)
     state = app.state.mbs
-    state.allowed_hosts = {f"127.0.0.1:{port}", f"localhost:{port}"}
-    server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning"))
+    state.allowed_hosts = allowed
+    state.access_key = access_key
+    if not local and not access_key:
+        print("Note: listening on all interfaces without MBS_ACCESS_KEY. Publish the port on 127.0.0.1 only "
+              "(the docker-compose default), or set MBS_ACCESS_KEY.", flush=True)
+    server = uvicorn.Server(uvicorn.Config(app, host=args.host, port=port, log_level="warning",
+                                           proxy_headers=True, forwarded_allow_ips="*" if not local else "127.0.0.1"))
 
     url = f"http://127.0.0.1:{port}/"
     print(f"M.B.S Studio: {url}", flush=True)

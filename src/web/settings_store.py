@@ -7,6 +7,7 @@ last four characters, and sends a new value only when the user types one.
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 import subprocess
 from dataclasses import dataclass
@@ -94,7 +95,8 @@ HEBREW_MODEL_FOLDER = "models--ivrit-ai--whisper-large-v3-turbo-ct2"
 class SettingsStore:
     def __init__(self, root: Path) -> None:
         self.root = Path(root)
-        self.env_path = self.root / ".env"
+        # A container keeps its settings on a mounted volume (MBS_ENV_FILE=/data/.env)
+        self.env_path = Path(os.environ.get("MBS_ENV_FILE") or self.root / ".env")
         self._gpu: Optional[Dict[str, Any]] = None
 
     # ------------------------------------------------------------------ .env

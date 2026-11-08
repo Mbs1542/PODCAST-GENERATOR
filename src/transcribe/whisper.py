@@ -84,7 +84,9 @@ def _add_cuda_dll_dirs() -> None:
 
 
 def default_models_dir() -> Path:
-    return Path(__file__).resolve().parents[2] / "models"
+    # A container keeps the 1.6 GB model on a volume so it downloads once (MBS_MODELS_DIR=/data/models)
+    configured = os.environ.get("MBS_MODELS_DIR")
+    return Path(configured) if configured else Path(__file__).resolve().parents[2] / "models"
 
 
 def download_model(model: str = DEFAULT_MODEL, models_dir: Optional[Path] = None) -> Path:

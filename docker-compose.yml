@@ -1,0 +1,29 @@
+# M.B.S Studio as a container.
+#
+#   docker compose up -d --build        then open http://127.0.0.1:8765
+#
+# By default the app is reachable from this computer only. To use it from a phone or
+# another computer (for example an iPhone over your WireGuard VPN):
+#   1. change the port line to "8765:8765", or bind it to the VPN address ("10.8.0.1:8765:8765")
+#   2. set MBS_ALLOWED_HOSTS to the address or name you will open (e.g. 10.8.0.1 or studio.lan)
+#   3. set MBS_ACCESS_KEY to a password of at least 12 characters (the app refuses to start without it)
+# Put both in a file named studio.env next to this file (see studio.env.example), never in the image.
+
+services:
+  studio:
+    build:
+      context: .
+      args:
+        GPU: "0"
+    image: mbs-studio:4.1
+    container_name: mbs-studio
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:8765:8765"
+    env_file:
+      - path: studio.env
+        required: false
+    volumes:
+      # Settings and keys (.env), projects and outputs, and the transcription model.
+      # A plain folder next to this file, so the podcasts and videos are easy to reach.
+      - ./studio-data:/data

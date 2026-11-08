@@ -7,6 +7,8 @@ knows, and the Host header must be the local address (blocks DNS rebinding).
 
 from __future__ import annotations
 
+import asyncio
+import html
 import json
 import re
 import secrets
@@ -14,11 +16,11 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
-from urllib.parse import quote
+from urllib.parse import parse_qs, quote
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 from ..audio.dialogue_tts import DIALOGUE_PROVIDERS, GEMINI_VOICE_STYLES, DialogueTTSError, list_elevenlabs_voices
@@ -34,6 +36,24 @@ from .projects import Project, ProjectStore
 from .settings_store import VOICE_SAMPLE, SettingsStore
 
 APP_ID = "mbs-studio"
+SESSION_COOKIE = "mbs_session"
+SESSION_DAYS = 30
+PUBLIC_PATHS = {"/login", "/logo", "/api/hello"}
+MAX_FAILED_LOGINS = 5
+LOGIN_WINDOW_SECONDS = 300
+
+
+def _login_page(message: str = "") -> str:
+    note = f'<p class="help" style="color:var(--bad)">{html.escape(message)}</p>' if message else ""
+    return f"""<!doctype html><html lang="he" dir="rtl"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1"><title>M.B.S Studio</title>
+<link rel="icon" href="/logo"><link rel="stylesheet" href="/static/app.css"></head>
+<body><main class="container" style="max-width:420px;padding-top:12vh">
+<div class="card stack"><div class="row"><img src="/logo" alt="" class="brand-logo"><h1>M.B.S Studio</h1></div>
+<form method="post" action="/login" class="stack">
+<label class="field"><span>סיסמת גישה</span><input type="password" name="key" autocomplete="current-password" autofocus required></label>
+{note}<button class="btn primary lg" type="submit">כניסה</button></form>
+<p class="help">הסיסמה מוגדרת בהפעלת השרת (MBS_ACCESS_KEY).</p></div></main></body></html>"""
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 TRANSCRIPT_EXTENSIONS = {".txt", ".srt", ".vtt", ".md"}
 MAX_TITLE = 80
@@ -55,6 +75,11 @@ class AppState:
         self.runner.recover_interrupted()
         self.last_ping = time.time()
         self.allowed_hosts: set = set()
+        # Network mode (a container or server reached from a phone over a VPN): an access key
+        # guards the page itself, because the per-launch API token is embedded in that page
+        self.access_key: str = ""
+        self.sessions: set = set()
+        self.failed_logins: Dict[str, list] = {}
 
 
 def _project_view(state: AppState, project: Project, full: bool = False) -> Dict[str, Any]:
@@ -119,12 +144,19 @@ def create_app(root: Path, runner_factory=None) -> FastAPI:
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.state.mbs = state
 
+    def _signed_in(request: Request) -> bool:
+        return not state.access_key or request.cookies.get(SESSION_COOKIE, "") in state.sessions
+
     @app.middleware("http")
     async def guard(request: Request, call_next):
         host = request.headers.get("host", "")
         if state.allowed_hosts and host not in state.allowed_hosts:
             return PlainTextResponse("Forbidden host", status_code=403)
         path = request.url.path
+        if state.access_key and not _signed_in(request) and path not in PUBLIC_PATHS and not path.startswith("/static/"):
+            if path.startswith("/api/"):
+                return JSONResponse({"detail": "sign in first"}, status_code=401)
+            return HTMLResponse(_login_page(), status_code=401)
         if path.startswith("/api/") and path != "/api/hello":
             token = request.headers.get("x-mbs-token") or request.query_params.get("t")
             if not token or not secrets.compare_digest(token, state.token):
@@ -141,6 +173,37 @@ def create_app(root: Path, runner_factory=None) -> FastAPI:
         return html.replace("__MBS_TOKEN__", state.token)
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+    @app.post("/login")
+    async def login(request: Request) -> Response:
+        if not state.access_key:
+            return RedirectResponse("/", status_code=303)
+        client = request.client.host if request.client else "?"
+        now = time.time()
+        recent = [t for t in state.failed_logins.get(client, []) if now - t < LOGIN_WINDOW_SECONDS]
+        if len(recent) >= MAX_FAILED_LOGINS:
+            return HTMLResponse(_login_page("יותר מדי ניסיונות. נסה שוב בעוד כמה דקות."), status_code=429)
+        form = parse_qs((await request.body()).decode("utf-8", "replace"))
+        key = (form.get("key") or [""])[0]
+        if not secrets.compare_digest(key.encode("utf-8"), state.access_key.encode("utf-8")):
+            state.failed_logins[client] = recent + [now]
+            await asyncio.sleep(1.0)  # slows down guessing
+            return HTMLResponse(_login_page("הסיסמה שגויה."), status_code=401)
+        state.failed_logins.pop(client, None)
+        session = secrets.token_urlsafe(32)
+        state.sessions.add(session)
+        response = RedirectResponse("/", status_code=303)
+        secure = request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+        response.set_cookie(SESSION_COOKIE, session, httponly=True, samesite="strict", secure=secure,
+                            max_age=SESSION_DAYS * 86400)
+        return response
+
+    @app.post("/logout")
+    def logout(request: Request) -> Response:
+        state.sessions.discard(request.cookies.get(SESSION_COOKIE, ""))
+        response = RedirectResponse("/", status_code=303)
+        response.delete_cookie(SESSION_COOKIE)
+        return response
 
     @app.get("/guide")
     def guide() -> FileResponse:

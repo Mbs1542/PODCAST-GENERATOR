@@ -87,6 +87,20 @@ def normalize_profile(raw: Dict[str, Any], valid_section_ids: List[str]) -> Dict
             section_id = text(item.get("section_id"))
             key_facts.append({"claim": text(item.get("claim")), "section_id": section_id if section_id in valid else ""})
 
+    # Claims that were argued in the lesson, with the objections raised: the backbone of the
+    # critique and debate directions, and easily flattened into a one-sided summary otherwise
+    arguments = []
+    for item in raw.get("arguments") or []:
+        if isinstance(item, dict) and text(item.get("claim")):
+            section_id = text(item.get("section_id"))
+            arguments.append({
+                "claim": text(item.get("claim")),
+                "raised_by": text(item.get("raised_by")),
+                "support": text(item.get("support")),
+                "objections": str_list(item.get("objections")),
+                "section_id": section_id if section_id in valid else "",
+            })
+
     level = text(raw.get("level")).lower()
     lesson_type = text(raw.get("lesson_type")).lower()
     return {
@@ -102,6 +116,7 @@ def normalize_profile(raw: Dict[str, Any], valid_section_ids: List[str]) -> Dict
         "key_facts": key_facts,
         "misconceptions": str_list(raw.get("misconceptions")),
         "open_questions": str_list(raw.get("open_questions")),
+        "arguments": arguments,
     }
 
 

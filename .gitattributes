@@ -1,0 +1,7 @@
+# Files read inside the Linux container keep LF line endings on every OS
+# (a CRLF Dockerfile breaks multi-line RUN commands; a CRLF env file adds "\r" to values)
+Dockerfile text eol=lf
+.dockerignore text eol=lf
+*.yml text eol=lf
+*.sh text eol=lf
+studio.env.example text eol=lf
