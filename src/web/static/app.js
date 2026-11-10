@@ -1248,8 +1248,9 @@ async function viewChainPodcast(initial) {
     ${chainSteps("podcast")}
     <div class="stack">
       ${status.settings_ok ? "" : setupBanner()}
-      <div class="card stack"><div><h2>מקורות לפרק</h2>
-        <div class="help">אפשר לבחור כמה שיעורים. הם יחוברו לפרק אחד, לפי הסדר שכאן.</div></div>
+      <div class="card stack"><div><h2>התמלולים שייכנסו לפרק</h2>
+        <div class="help">הפודקאסט נכתב מהטקסט של התמלול, לא מהסרטון עצמו. ליד כל תמלול: אורך ההקלטה המקורית וכמה מילים יש בו.
+          אפשר לבחור כמה שיעורים, והם יחוברו לפרק אחד לפי הסדר שכאן.</div></div>
         <div id="sources" class="stack" style="gap:6px"></div></div>
       <div class="card stack" id="recommend"></div>
       <div class="card stack">
@@ -1282,10 +1283,12 @@ async function viewChainPodcast(initial) {
     box.innerHTML = ordered.length ? ordered.map((item) => {
       const position = selected.indexOf(item.id);
       const part = estimate?.parts?.find((p) => p.id === item.id);
+      const length = part ? `${part.minutes < 1 ? "פחות מדקה" : `${Math.round(part.minutes)} דק׳`} הקלטה · ${part.words.toLocaleString("he-IL")} מילים` : "";
       return `<div class="source-row ${position >= 0 ? "on" : ""}">
-        <label class="row" style="flex:1;min-width:0"><input type="checkbox" data-source="${esc(item.id)}" ${position >= 0 ? "checked" : ""}>
-          ${position >= 0 ? `<span class="badge ok">${position + 1}</span>` : ""}<bdi class="ellipsis">${esc(item.title)}</bdi></label>
-        ${part ? `<span class="muted small">${part.minutes < 1 ? "פחות מדקה" : `${Math.round(part.minutes)} דק׳`}</span>` : ""}
+        <label class="row" style="flex:1;min-width:0;align-items:flex-start"><input type="checkbox" data-source="${esc(item.id)}" ${position >= 0 ? "checked" : ""}>
+          ${position >= 0 ? `<span class="badge ok">${position + 1}</span>` : ""}
+          <span style="min-width:0"><span class="badge">תמלול</span> <bdi class="ellipsis">${esc(item.title)}</bdi>
+            <span class="muted small" style="display:block;overflow-wrap:anywhere">מהקובץ: <bdi dir="auto">${esc(item.source)}</bdi>${length ? ` · ${length}` : ""}</span></span></label>
         ${position >= 0 && selected.length > 1 ? `
           <button class="btn icon ghost" data-move="-1" data-id="${esc(item.id)}" ${position === 0 ? "disabled" : ""} aria-label="הקדם">↑</button>
           <button class="btn icon ghost" data-move="1" data-id="${esc(item.id)}" ${position === selected.length - 1 ? "disabled" : ""} aria-label="אחר">↓</button>` : ""}
@@ -1325,7 +1328,8 @@ async function viewChainPodcast(initial) {
     box.innerHTML = `
       <div><h2>המלצת אורך: כ-${recommended} דקות</h2>
         <div class="help">${esc(estimate.reason)}</div>
-        <div class="muted small">${estimate.files > 1 ? `${estimate.files} הקלטות, ` : ""}סך הכול ${estimate.lecture_minutes < 1 ? "פחות מדקה" : `${Math.round(estimate.lecture_minutes)} דקות`} הקלטה</div></div>
+        <div class="muted small">${estimate.files > 1 ? `${estimate.files} תמלולים, ` : ""}סך הכול ${estimate.lecture_minutes < 1 ? "פחות מדקה" : `${Math.round(estimate.lecture_minutes)} דקות`} הקלטה,
+          ${estimate.parts.reduce((sum, part) => sum + part.words, 0).toLocaleString("he-IL")} מילים בתמלול</div></div>
       <div class="row length-choices">${estimate.choices.map((m) => `<button class="btn" data-len="${Number(m)}">
         ${Number(m) === Math.round(recommended) ? "מומלץ · " : Number(m) < recommended ? "קצר · " : "מקיף · "}${Number(m)} דק׳</button>`).join("")}</div>`;
     minutesSelect.options[0].textContent = `אוטומטי (כ-${recommended} דקות, מומלץ)`;
