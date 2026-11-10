@@ -917,6 +917,9 @@ async function viewSettings() {
   };
   const voiceNames = {};       // ElevenLabs voice id -> name, once the account's voices are loaded
   let elevenVoices = null;
+  let hebrewLibrary = null;  // ElevenLabs Voice Library voices recorded in Hebrew (loaded on request)
+  const AGE_HE = { young: "צעיר", middle_aged: "מבוגר", old: "מבוגר מאוד" };
+  const GENDER_HE = { male: "גבר", female: "אישה" };
   let geminiVoices = null;
 
   render(`
@@ -999,10 +1002,36 @@ async function viewSettings() {
     }).join("");
     const loader = provider === "elevenlabs" && !elevenVoices
       ? `<button class="btn" data-load-voices>טען את הקולות מהחשבון שלך</button>` : "";
-    const hint = provider === "gemini" ? `<p class="help">לחיצה על ▶ מפיקה משפט קצר בעברית בקול הזה. בפעם הראשונה זה לוקח כמה שניות, ואחר כך הדוגמה נשמרת.</p>` : "";
+    const hint = provider === "gemini" ? `<p class="help">לחיצה על ▶ מפיקה משפט קצר בעברית בקול הזה. בפעם הראשונה זה לוקח כמה שניות, ואחר כך הדוגמה נשמרת.</p>`
+      : rows ? `<p class="help">אלה הקולות שבחשבון שלך. הקולות המובנים של ElevenLabs מוקלטים באנגלית: הם קוראים עברית, אבל עם מבטא, ו-▶ לידם משמיע דוגמה באנגלית.
+          לעברית טבעית, בחר מ"קולות בעברית" למטה. לשמיעה בעברית של מה שבחרת: "השמע את שניהם בשיחה".</p>` : "";
     return `<div class="voice-picker">
       <div class="row">${chosen}<button class="btn" data-preview="${provider}">▶ השמע את שניהם בשיחה</button></div>
+      ${provider === "elevenlabs" ? hebrewSection(keys) : ""}
       ${loader}${hint}${rows ? `<div class="voice-list">${rows}</div>` : ""}</div>`;
+  };
+
+  // Native Hebrew voices from ElevenLabs' Voice Library: preview in Hebrew, add to the account and pick in one click
+  const hebrewSection = (keys) => {
+    if (!hebrewLibrary) {
+      return `<div class="hebrew-voices"><button class="btn primary" data-load-hebrew>קולות בעברית מהספרייה של ElevenLabs</button>
+        <span class="help">קולות שהוקלטו בעברית על ידי דוברי עברית, עם דוגמה בעברית.</span></div>`;
+    }
+    const { voices, slots_used: used, slots_limit: limit, tier } = hebrewLibrary;
+    const rows = voices.map((v) => {
+      const details = [GENDER_HE[v.gender] || v.gender, AGE_HE[v.age] || v.age, v.descriptive].filter(Boolean).join(" · ");
+      const chosenFor = v.account_id ? keys.filter((k) => draft[k] === v.account_id) : [];  // "" must not match an empty choice
+      const buttons = v.needs_paid ? `<span class="badge">דורש מנוי בתשלום</span>` : keys.map((k, i) =>
+        `<button class="btn ${chosenFor.includes(k) ? "primary" : ""}" data-hebrew-assign="${k}" data-id="${esc(v.voice_id)}">${i ? "לנועה" : "לרועי"}</button>`).join("");
+      return `<div class="voice-row">
+        <button class="btn icon" data-hebrew-play="${esc(v.voice_id)}" ${v.preview_url ? "" : "disabled"} aria-label="השמע את ${esc(v.name)} בעברית">▶</button>
+        <div class="voice-name"><b>${esc(v.name)}</b> <span class="muted small">${esc(details)}</span>
+          ${v.added ? `<span class="badge ok">בחשבון</span>` : ""}</div>${buttons}</div>`;
+    }).join("");
+    const slots = limit ? `בחשבון שלך ${used} מתוך ${limit} קולות נוספים${tier === "free" ? " (מנוי חינמי)" : ""}. בחירת קול שעוד לא בחשבון מוסיפה אותו ותופסת מקום אחד.` : "";
+    return `<div class="hebrew-voices stack" style="gap:8px"><b>קולות בעברית (${voices.length})</b>
+      <p class="help" style="margin:0">▶ משמיע דוגמה בעברית. ${slots}</p>
+      ${rows ? `<div class="voice-list">${rows}</div>` : `<div class="muted">לא נמצאו קולות בעברית בספרייה.</div>`}</div>`;
   };
 
   const renderGroups = () => {
@@ -1035,6 +1064,51 @@ async function viewSettings() {
           play(`/api/voices/gemini/${enc(b.dataset.id)}/sample?t=${enc(TOKEN)}`, b);
         } catch (err) { toast(err.message, true); }
         b.disabled = false;
+      };
+    });
+    const hebrewLoader = app.querySelector("[data-load-hebrew]");
+    if (hebrewLoader) hebrewLoader.onclick = async () => {
+      hebrewLoader.disabled = true;
+      try {
+        await save();
+        const [library, account] = await Promise.all([api("/voices/elevenlabs/library"), elevenVoices ? null : api("/voices/elevenlabs")]);
+        if (account) {
+          elevenVoices = account.voices;
+          elevenVoices.forEach((v) => { voiceNames[v.voice_id] = v.name; });
+        }
+        // A library voice already in the account is used by its id there
+        library.voices.forEach((v) => {
+          const mine = elevenVoices.find((a) => a.voice_id === v.voice_id || a.name === v.name);
+          v.account_id = mine ? mine.voice_id : "";
+          v.added = v.added || Boolean(mine);
+        });
+        hebrewLibrary = library;
+        renderGroups();
+      } catch (err) { toast(err.message, true); hebrewLoader.disabled = false; }
+    };
+    app.querySelectorAll("[data-hebrew-play]").forEach((b) => {
+      b.onclick = () => play(hebrewLibrary.voices.find((v) => v.voice_id === b.dataset.hebrewPlay).preview_url, b);
+    });
+    app.querySelectorAll("[data-hebrew-assign]").forEach((b) => {
+      b.onclick = async () => {
+        const voice = hebrewLibrary.voices.find((v) => v.voice_id === b.dataset.id);
+        b.disabled = true;
+        try {
+          if (!voice.account_id) {
+            const { voice_id } = await api("/voices/elevenlabs/library/add", { method: "POST",
+              body: { public_owner_id: voice.public_owner_id, voice_id: voice.voice_id, name: voice.name } });
+            voice.account_id = voice_id;
+            voice.added = true;
+            if (hebrewLibrary.slots_used != null) hebrewLibrary.slots_used += 1;
+            elevenVoices = (await api("/voices/elevenlabs")).voices;
+            elevenVoices.forEach((v) => { voiceNames[v.voice_id] = v.name; });
+          }
+          voiceNames[voice.account_id] = voice.name;
+          draft[b.dataset.hebrewAssign] = voice.account_id;
+          await save();
+          toast(`${voice.name} נבחר ${b.dataset.hebrewAssign.endsWith("NOA") ? "לנועה" : "לרועי"} ונשמר`);
+          renderGroups();
+        } catch (err) { b.disabled = false; toast(err.message, true); }
       };
     });
     const loader = app.querySelector("[data-load-voices]");

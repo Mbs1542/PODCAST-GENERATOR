@@ -32,6 +32,9 @@ CHAPTER_PAUSE_MS = 450
 
 ELEVENLABS_DIALOGUE_URL = "https://api.elevenlabs.io/v1/text-to-dialogue/with-timestamps"
 ELEVENLABS_VOICES_URL = "https://api.elevenlabs.io/v1/voices"
+ELEVENLABS_LIBRARY_URL = "https://api.elevenlabs.io/v1/shared-voices"
+ELEVENLABS_ADD_VOICE_URL = "https://api.elevenlabs.io/v1/voices/add/{owner}/{voice}"
+ELEVENLABS_SUBSCRIPTION_URL = "https://api.elevenlabs.io/v1/user/subscription"
 ELEVENLABS_DEFAULT_MODEL = "eleven_v4"
 # ElevenLabs advises at most ~2,000 characters across a dialogue request
 ELEVENLABS_MAX_CHARS = 1800
@@ -164,6 +167,8 @@ def _elevenlabs_error(response: Any) -> str:
         return "מפתח ElevenLabs שגוי (401)."
     if "quota" in f"{status} {message}".lower():
         return "נגמרה מכסת התווים בחשבון ElevenLabs."
+    if "voice_limit" in f"{status} {message}".lower() or "maximum amount of custom voices" in message.lower():
+        return "הגעת למספר הקולות המרבי בחשבון ElevenLabs. מחק קול שלא בשימוש (ב-elevenlabs.io תחת My Voices) או שדרג את המנוי."
     return f"ElevenLabs החזיר שגיאה {response.status_code}: {message or status}"
 
 
@@ -183,6 +188,49 @@ def list_elevenlabs_voices(api_key: str, http: Any = None) -> List[Dict[str, Any
             "preview_url": voice.get("preview_url", ""),
         })
     return sorted(voices, key=lambda v: v["name"].lower())
+
+
+def list_elevenlabs_library(api_key: str, language: str = "he", http: Any = None) -> Dict[str, Any]:
+    """Native voices in a language from ElevenLabs' public Voice Library, with the account's voice slots.
+
+    A new account holds only ElevenLabs' built-in voices, which are English (they still read Hebrew with
+    v3/v4, with an accent). The library has voices recorded by Hebrew speakers; using one means adding
+    it to the account, which takes one of the plan's voice slots.
+    """
+    http = http or requests
+    headers = {"xi-api-key": api_key}
+    response = http.get(ELEVENLABS_LIBRARY_URL, headers=headers, timeout=20,
+                        params={"language": language, "page_size": 100, "sort": "trending"})
+    if response.status_code != 200:
+        raise DialogueTTSError(_elevenlabs_error(response))
+    tier, used, limit = "", None, None
+    try:
+        sub = http.get(ELEVENLABS_SUBSCRIPTION_URL, headers=headers, timeout=20)
+        if sub.status_code == 200:
+            info = sub.json()
+            tier, used, limit = info.get("tier", ""), info.get("voice_slots_used"), info.get("voice_limit")
+    except requests.RequestException:
+        pass
+    free = tier == "free"
+    voices = [{
+        "voice_id": v.get("voice_id", ""), "public_owner_id": v.get("public_owner_id", ""), "name": v.get("name", ""),
+        "gender": v.get("gender", ""), "age": v.get("age", ""), "descriptive": v.get("descriptive", ""),
+        "use_case": v.get("use_case", ""), "preview_url": v.get("preview_url", ""),
+        "added": bool(v.get("is_added_by_user")), "needs_paid": free and not v.get("free_users_allowed", True),
+    } for v in response.json().get("voices", []) if v.get("voice_id") and v.get("public_owner_id")]
+    voices.sort(key=lambda v: (v["needs_paid"], v["name"].lower()))
+    return {"voices": voices, "tier": tier, "slots_used": used, "slots_limit": limit}
+
+
+def add_elevenlabs_library_voice(api_key: str, public_owner_id: str, voice_id: str, name: str, http: Any = None) -> str:
+    """Add a Voice Library voice to the account; returns the voice id to use with it."""
+    if not re.fullmatch(r"[A-Za-z0-9]{6,80}", public_owner_id or "") or not re.fullmatch(r"[A-Za-z0-9]{6,80}", voice_id or ""):
+        raise DialogueTTSError("מזהה קול לא תקין")
+    url = ELEVENLABS_ADD_VOICE_URL.format(owner=public_owner_id, voice=voice_id)
+    response = (http or requests).post(url, headers={"xi-api-key": api_key}, json={"new_name": name[:100] or voice_id}, timeout=30)
+    if response.status_code != 200:
+        raise DialogueTTSError(_elevenlabs_error(response))
+    return response.json().get("voice_id") or voice_id
 
 
 class GeminiDialogue:

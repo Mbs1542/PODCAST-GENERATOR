@@ -23,7 +23,14 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from ..audio.dialogue_tts import DIALOGUE_PROVIDERS, GEMINI_VOICE_STYLES, DialogueTTSError, list_elevenlabs_voices
+from ..audio.dialogue_tts import (
+    DIALOGUE_PROVIDERS,
+    GEMINI_VOICE_STYLES,
+    DialogueTTSError,
+    add_elevenlabs_library_voice,
+    list_elevenlabs_library,
+    list_elevenlabs_voices,
+)
 from ..engine.planner import SEGMENT_KINDS, assign_word_budget
 from ..engine.prompts import FORMATS
 from ..transcribe import MEDIA_EXTENSIONS
@@ -281,6 +288,30 @@ def create_app(root: Path, runner_factory=None, media_runner_factory=None) -> Fa
             return {"voices": list_elevenlabs_voices(key)}
         except DialogueTTSError as exc:
             raise HTTPException(400, str(exc))
+
+    def _eleven_key() -> str:
+        key = state.settings_store.read_env().get("ELEVENLABS_API_KEY", "")
+        if not key:
+            raise HTTPException(400, "שמור קודם מפתח ElevenLabs")
+        return key
+
+    @app.get("/api/voices/elevenlabs/library")
+    def elevenlabs_library(language: str = "he") -> Dict[str, Any]:
+        """Native Hebrew voices from ElevenLabs' Voice Library (the account itself starts with English ones)."""
+        try:
+            return list_elevenlabs_library(_eleven_key(), "en" if language == "en" else "he")
+        except DialogueTTSError as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.post("/api/voices/elevenlabs/library/add")
+    async def elevenlabs_library_add(request: Request) -> Dict[str, Any]:
+        body = await request.json()
+        try:
+            voice_id = await run_in_threadpool(add_elevenlabs_library_voice, _eleven_key(), str(body.get("public_owner_id", "")),
+                                               str(body.get("voice_id", "")), str(body.get("name", "")))
+        except DialogueTTSError as exc:
+            raise HTTPException(400, str(exc))
+        return {"voice_id": voice_id}
 
     @app.get("/api/voices/gemini")
     def gemini_voices() -> Dict[str, Any]:

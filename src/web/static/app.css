@@ -364,3 +364,6 @@ dialog.modal { border: 1px solid var(--border); border-radius: var(--radius); ba
   padding: 20px 22px; width: min(520px, calc(100vw - 32px)); box-shadow: 0 20px 60px rgba(0, 0, 0, .35); }
 dialog.modal::backdrop { background: rgba(0, 0, 0, .45); }
 dialog.modal h2 { margin: 0; }
+
+.hebrew-voices { border: 1px dashed var(--accent); border-radius: var(--radius-sm); padding: 12px; margin: 10px 0; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+.hebrew-voices.stack { display: flex; flex-direction: column; align-items: stretch; }

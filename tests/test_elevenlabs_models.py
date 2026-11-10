@@ -52,3 +52,59 @@ def test_override_without_model_falls_back_to_a_hebrew_model():
             patch("src.audio.elevenlabs_tts.get_logger", return_value=MagicMock()):
         synth = ElevenLabsSpeechSynthesizer(settings=settings, voice_manager=manager)
         assert synth._get_voice_config("Roee", "שלום")["model"] == "eleven_v3"
+
+
+class _Reply:
+    def __init__(self, status, body):
+        self.status_code, self._body, self.text = status, body, str(body)
+
+    def json(self):
+        return self._body
+
+
+class _FakeEleven:
+    def __init__(self, add_status=200):
+        self.add_status, self.calls = add_status, []
+
+    def get(self, url, headers=None, params=None, timeout=None):
+        self.calls.append(("GET", url, params))
+        if url.endswith("/subscription"):
+            return _Reply(200, {"tier": "free", "voice_slots_used": 1, "voice_limit": 3})
+        return _Reply(200, {"voices": [
+            {"voice_id": "paidVoice123", "public_owner_id": "owner000001", "name": "Zina", "gender": "female",
+             "free_users_allowed": False, "preview_url": "https://x/z.mp3"},
+            {"voice_id": "danitVoice12", "public_owner_id": "owner000002", "name": "Danit", "gender": "female",
+             "age": "young", "free_users_allowed": True, "is_added_by_user": True, "preview_url": "https://x/d.mp3"},
+            {"voice_id": "", "public_owner_id": "owner000003", "name": "broken"},
+        ]})
+
+    def post(self, url, headers=None, json=None, timeout=None):
+        self.calls.append(("POST", url, json))
+        if self.add_status != 200:
+            return _Reply(self.add_status, {"detail": {"status": "voice_limit_reached", "message": "limit"}})
+        return _Reply(200, {"voice_id": "newAccountId1"})
+
+
+def test_hebrew_library_lists_native_voices_and_free_plan_limits():
+    from src.audio.dialogue_tts import list_elevenlabs_library
+
+    fake = _FakeEleven()
+    result = list_elevenlabs_library("key", http=fake)
+    assert fake.calls[0][2]["language"] == "he"
+    assert [v["name"] for v in result["voices"]] == ["Danit", "Zina"]  # usable first, broken entries dropped
+    assert result["voices"][0]["added"] is True and result["voices"][1]["needs_paid"] is True
+    assert (result["tier"], result["slots_used"], result["slots_limit"]) == ("free", 1, 3)
+
+
+def test_adding_a_library_voice_returns_its_account_id_and_explains_a_full_account():
+    import pytest
+
+    from src.audio.dialogue_tts import DialogueTTSError, add_elevenlabs_library_voice
+
+    fake = _FakeEleven()
+    assert add_elevenlabs_library_voice("key", "owner000002", "danitVoice12", "Danit", http=fake) == "newAccountId1"
+    assert fake.calls[-1][1].endswith("/voices/add/owner000002/danitVoice12") and fake.calls[-1][2] == {"new_name": "Danit"}
+    with pytest.raises(DialogueTTSError, match="מזהה"):
+        add_elevenlabs_library_voice("key", "../../etc", "danitVoice12", "x", http=fake)  # no path tricks
+    with pytest.raises(DialogueTTSError, match="המרבי"):
+        add_elevenlabs_library_voice("key", "owner000002", "danitVoice12", "Danit", http=_FakeEleven(add_status=400))
