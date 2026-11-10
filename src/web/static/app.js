@@ -375,12 +375,73 @@ function fmtSize(bytes) {
   return bytes < 1048576 ? `${Math.max(1, Math.round(bytes / 1024))}KB` : `${(bytes / 1048576).toFixed(1)}MB`;
 }
 
+// ------------------------------------------------------------------ time left
+
+// When each running step was first seen here, and its progress then: a fallback for servers that do not
+// report when the step began, and the base for the pace when they do not report progress steadily
+const etaSeen = new Map();
+const stepKind = (stage) => String(stage || "").replace(/\d+/g, "#");  // "part 3 of 12" and "part 4 of 12" are one step
+
+function fmtClock(seconds) {
+  seconds = Math.max(0, Math.round(seconds));
+  const h = Math.floor(seconds / 3600), m = Math.floor((seconds % 3600) / 60), s = seconds % 60;
+  return h ? `${h}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}` : `${m}:${String(s).padStart(2, "0")}`;
+}
+
+function fmtLeft(seconds) {
+  if (seconds < 60) return "נשארה פחות מדקה";
+  const minutes = Math.round(seconds / 60);
+  return minutes < 60 ? `נותרו כ-${minutes} דק׳` : `נותרו כ-${Math.floor(minutes / 60)} שע׳ ו-${minutes % 60} דק׳`;
+}
+
+/* "Running for 4:12 · about 6 min left". The estimate comes from how fast this step has been moving:
+   from when it began (the server says) or from what this page has seen since it opened. */
+function etaLine(key, stage, progress, stageStarted) {
+  const now = Date.now() / 1000;
+  let seen = etaSeen.get(key);
+  if (!seen || seen.kind !== stepKind(stage)) {
+    seen = { kind: stepKind(stage), since: now, first: null };
+    etaSeen.set(key, seen);
+  }
+  const known = typeof progress === "number";
+  if (known && progress > 0 && !seen.first) seen.first = [now, progress];
+  const started = stageStarted > 0 ? stageStarted : seen.since;
+  const elapsed = now - started;
+  let left = null;
+  if (known && progress >= 0.02 && progress < 1) {
+    if (stageStarted > 0) left = elapsed * (1 - progress) / progress;
+    else if (seen.first && now - seen.first[0] >= 5 && progress > seen.first[1]) {
+      left = (now - seen.first[0]) * (1 - progress) / (progress - seen.first[1]);
+    }
+  }
+  const parts = [`רץ כבר ${fmtClock(elapsed)}`];
+  if (left !== null) parts.push(fmtLeft(left));
+  else if (known) parts.push("מחשב זמן משוער...");
+  return parts.join(" · ");
+}
+
+/* Servers that do not report when the step began still logged it ("09:43:35  <step>"): use that line. */
+function stageStartFromLog(p) {
+  const kind = stepKind(p.stage);
+  for (let i = (p.log || []).length - 1; i >= 0; i--) {
+    const match = p.log[i].match(/^(\d{2}):(\d{2}):(\d{2})\s+(.*)$/);
+    if (match && stepKind(match[4]) === kind) {
+      const at = new Date();
+      at.setHours(Number(match[1]), Number(match[2]), Number(match[3]), 0);
+      if (at.getTime() > Date.now() + 60000) at.setDate(at.getDate() - 1);  // logged before midnight
+      return at.getTime() / 1000;
+    }
+  }
+  return 0;
+}
+
 function runPanel(p) {
   if (p.running) {
     return `<div class="card stack">
       <div class="row" style="justify-content:space-between"><b>${esc(p.stage || "בעבודה...")}</b>
         ${typeof p.progress === "number" ? `<span class="muted">${Math.round(p.progress * 100)}%</span>` : ""}</div>
       ${progressBar(p)}
+      <div class="muted small eta">${etaLine(p.id, p.stage, p.progress, p.stage_started || stageStartFromLog(p))}</div>
       <p class="help" style="margin:0">אפשר לסגור את הדף ולחזור אחר כך. העבודה ממשיכה ברקע כל עוד האפליקציה פתוחה.</p>
       ${logBlock(p)}
     </div>`;
@@ -398,8 +459,20 @@ function runPanel(p) {
 
 function logBlock(p) {
   if (!p.log || !p.log.length) return "";
-  return `<details class="log"><summary>יומן עבודה</summary><pre>${esc(p.log.join("\n"))}</pre></details>`;
+  // The full log as a file, on servers that have it (they report stage_started)
+  const download = "stage_started" in p
+    ? `<a class="small" href="/api/projects/${enc(p.id)}/log.txt?t=${enc(TOKEN)}">הורד את היומן המלא</a>` : "";
+  return `<details class="log"><summary>יומן עבודה <span class="muted small">(${p.log.length} שורות, האחרונות למטה)</span></summary>
+    <pre>${esc(p.log.join("\n"))}</pre>${download}</details>`;
 }
+
+// An opened log shows its newest lines
+document.addEventListener("toggle", (e) => {
+  if (e.target.matches?.("details.log") && e.target.open) {
+    const pre = e.target.querySelector("pre");
+    if (pre) pre.scrollTop = pre.scrollHeight;
+  }
+}, true);
 
 // The video tab is a workshop: stay on it while its jobs run and when they finish
 const stickyTab = () => (location.hash.match(/^#\/p\/[^/]+\/(video)$/) || [])[1];
@@ -471,8 +544,14 @@ async function pollProject(id) {
     // Refresh only the progress panel so edits elsewhere on the page are not lost
     const panel = document.getElementById("run-panel");
     const open = panel.querySelector("details")?.open;
+    const pre = panel.querySelector("details pre");
+    const atBottom = !pre || pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20;
     panel.innerHTML = runPanel(p);
-    if (open) panel.querySelector("details").open = true;
+    if (open) {
+      panel.querySelector("details").open = true;
+      const fresh = panel.querySelector("details pre");
+      if (fresh && atBottom) fresh.scrollTop = fresh.scrollHeight;  // follow new lines unless the user scrolled up
+    }
     schedule(() => pollProject(id), 1500);
   } else {
     // The job finished: show the tab for the new stage (plan, script or listening)
@@ -1233,6 +1312,8 @@ function mediaRow(item, local = false) {
       <span class="badge ${cls}">${running ? `<span class="dot"></span>` : ""}${esc(item.stage && running ? item.stage : label)}</span>
     </div>
     ${running ? `<div class="progress ${known ? "" : "indeterminate"}"><div style="width:${known ? Math.round(item.progress * 100) : 30}%"></div></div>` : ""}
+    ${item.status === "running" ? `<div class="muted small eta">${etaLine(item.id, item.stage, item.progress, item.stage_started)}</div>` : ""}
+    ${item.status !== "queued" && item.status !== "uploading" ? `<details class="log" data-media-log="${esc(item.id)}"><summary>יומן עבודה</summary><pre>טוען...</pre></details>` : ""}
     ${item.error ? `<div class="help" style="color:var(--bad)">${esc(item.error)}</div>` : ""}
     ${folder}
     ${files || actions ? `<div class="row" style="flex-wrap:wrap">${files}${actions}</div>` : ""}
@@ -1524,9 +1605,11 @@ async function viewTools(tab) {
     const items = data.items.filter((i) => i.kind === kind);
     const box = document.getElementById("media-list");
     if (!box) return;
+    const openLogs = [...box.querySelectorAll("[data-media-log][open]")].map((d) => d.dataset.mediaLog);
     box.innerHTML = items.length ? items.map((item) => mediaRow(item, data.local)).join("")
       : `<div class="muted">${tab === "download" ? "עוד אין הורדות." : "עוד אין תמלולים."}</div>`;
     bindRows();
+    openLogs.forEach((id) => { const d = box.querySelector(`[data-media-log="${CSS.escape(id)}"]`); if (d) { d.open = true; loadMediaLog(d); } });
     if (data.items.some((i) => ["queued", "running", "uploading"].includes(i.status))) schedule(refresh, 1500);
   };
   const refresh = async () => {
@@ -1536,7 +1619,19 @@ async function viewTools(tab) {
   const act = async (fn, message) => {
     try { await fn(); if (message) toast(message); await refresh(); } catch (err) { toast(err.message, true); }
   };
+  const loadMediaLog = async (details) => {
+    const pre = details.querySelector("pre");
+    try {
+      const item = await api(`/media/${enc(details.dataset.mediaLog)}`);
+      const atBottom = pre.scrollTop + pre.clientHeight >= pre.scrollHeight - 20 || pre.textContent === "טוען...";
+      pre.textContent = item.log.length ? item.log.join("\n") : "עוד אין שורות ביומן.";
+      if (atBottom) pre.scrollTop = pre.scrollHeight;
+    } catch (err) { pre.textContent = err.message; }
+  };
   const bindRows = () => {
+    app.querySelectorAll("[data-media-log]").forEach((d) => {
+      d.addEventListener("toggle", () => { if (d.open) loadMediaLog(d); });
+    });
     app.querySelectorAll("[data-media-cancel]").forEach((b) => { b.onclick = () => act(() => api(`/media/${enc(b.dataset.mediaCancel)}/cancel`, { method: "POST" })); });
     app.querySelectorAll("[data-media-retry]").forEach((b) => { b.onclick = () => act(() => api(`/media/${enc(b.dataset.mediaRetry)}/retry`, { method: "POST" })); });
     app.querySelectorAll("[data-media-delete]").forEach((b) => {

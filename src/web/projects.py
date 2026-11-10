@@ -7,6 +7,8 @@ video pipeline can run on a project and reuse its script and audio.
 from __future__ import annotations
 
 import json
+import re
+import time
 import shutil
 import threading
 from dataclasses import asdict, dataclass, field
@@ -46,6 +48,7 @@ class Project:
     error: str = ""
     notice: str = ""
     log: List[str] = field(default_factory=list)
+    stage_started: float = 0.0     # epoch seconds when `stage` last changed (elapsed time and ETA)
 
 
 class ProjectStore:
@@ -128,6 +131,8 @@ class ProjectStore:
             project = self.get(project_id)
             if project is None:
                 raise KeyError(project_id)
+            if "stage" in changes and re.sub(r"\d+", "#", changes["stage"] or "") != re.sub(r"\d+", "#", project.stage or ""):
+                project.stage_started = time.time() if changes["stage"] else 0.0
             for key, value in changes.items():
                 setattr(project, key, value)
             self.save(project)

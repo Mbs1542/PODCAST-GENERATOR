@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import requests
 from openai import APIConnectionError, APITimeoutError, AzureOpenAI, InternalServerError, RateLimitError
@@ -56,6 +56,23 @@ def parse_json_reply(text: Optional[str]) -> Dict[str, Any]:
     return data
 
 
+def _retry_reporter(attempts: int) -> Callable[[Any], None]:
+    """Tell the work log that a call failed and is being retried, so a long wait is not silent."""
+    def report(state: Any) -> None:
+        client = state.args[0] if state.args else None
+        hook = getattr(client, "on_retry", None)
+        if not hook:
+            return
+        exc = state.outcome.exception() if state.outcome else None
+        code = getattr(exc, "code", None) or getattr(exc, "status_code", None)
+        wait = getattr(getattr(state, "next_action", None), "sleep", 0) or 0
+        reason = "עמוס" if code in (429, 503, 529) else "שגיאה זמנית"
+        detail = code or (exc.__class__.__name__ if exc else "")
+        hook(f"{getattr(client, 'name', 'model')} {reason} ({detail}); ניסיון {state.attempt_number + 1} מתוך {attempts} "
+             f"בעוד {wait:.0f} שניות")
+    return report
+
+
 @dataclass
 class LLMClient:
     """A chat model that answers in JSON. Subclasses implement `_complete`."""
@@ -65,6 +82,8 @@ class LLMClient:
 
     def __post_init__(self) -> None:
         self.logger = get_logger(f"LLM[{self.name}]")
+        # Set by the app: a retry after a busy or failed call is written to the work log
+        self.on_retry: Optional[Callable[[str], None]] = None
 
     def chat_json(
         self,
@@ -112,6 +131,7 @@ class OpenAIChatClient(LLMClient):
     cost_tracker: Optional[Any] = None
 
     @retry(
+        before_sleep=_retry_reporter(3),
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=2, min=2, max=20),
         retry=retry_if_exception_type((RateLimitError, APITimeoutError, APIConnectionError, InternalServerError)),
@@ -211,6 +231,7 @@ class GeminiChatClient(LLMClient):
         wait=wait_exponential(multiplier=3, min=4, max=90),
         retry=retry_if_exception(_gemini_transient),
         reraise=True,
+        before_sleep=_retry_reporter(5),
     )
     def _complete(self, messages: List[Dict[str, str]], max_tokens: int, temperature: float, task: str = "") -> Tuple[str, bool]:
         from google.genai import types

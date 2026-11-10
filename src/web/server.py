@@ -108,6 +108,7 @@ def _project_view(state: AppState, project: Project, full: bool = False) -> Dict
         "source_name": project.source_name, "options": project.options,
         "files": sorted(state.store.files(project)),
         "drive_uploading": state.delivery.is_uploading(project.id),
+        "stage_started": project.stage_started,
     }
     dialogue = state.store.read_json(state.store.run_paths(project).dialogue_path)
     if dialogue:
@@ -732,6 +733,13 @@ def create_app(root: Path, runner_factory=None, media_runner_factory=None) -> Fa
         if download:
             return FileResponse(path, filename=f"{project.title}{path.suffix}")
         return FileResponse(path)
+
+    @app.get("/api/projects/{project_id}/log.txt")
+    def project_log(project_id: str) -> PlainTextResponse:
+        project = _get(project_id)
+        name = quote(f"{project.title} - יומן עבודה.txt")
+        return PlainTextResponse("\n".join(project.log) + "\n", headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{name}"})
 
     @app.get("/api/projects/{project_id}/summary")
     def get_summary(project_id: str, format: str = "html", download: int = 0, print: int = 0) -> Response:

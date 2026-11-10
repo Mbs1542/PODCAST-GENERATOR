@@ -33,6 +33,10 @@ from .settings_store import SettingsStore, apply_project_options
 JOB_KINDS = ("prepare", "write", "audio", "images", "video")
 MAX_AI_IMAGES = 12
 _SEGMENT_RE = re.compile(r"segment (\d+)/(\d+)")
+_CLEAN_RE = re.compile(r"cleaning part (\d+)/(\d+)")
+# The analysis runs three steps; each finished step names the next one
+_NEXT_STEP = {"Stage 1:": "מנתח את השיעור: מושגים, דוגמאות ומטרות (שלב 2 מתוך 3)",
+              "Stage 2:": "בונה תוכנית לפרק (שלב 3 מתוך 3)"}
 _CHUNK_RE = re.compile(r"Chunk (\d+)/(\d+)")
 
 
@@ -170,6 +174,16 @@ class JobRunner:
             if match:
                 done, total = int(match.group(1)), int(match.group(2))
                 self.store.update(project_id, progress=done / total, stage=f"כותב ובודק מקטע {done} מתוך {total}")
+                return
+            match = _CLEAN_RE.search(message)
+            if match:
+                done, total = int(match.group(1)), int(match.group(2))
+                self.store.update(project_id, progress=(done - 1) / total,
+                                  stage="מנקה את התמלול (שלב 1 מתוך 3)")
+                return
+            for prefix, next_step in _NEXT_STEP.items():
+                if message.startswith(prefix) and "cleaning part" not in message:
+                    self.store.update(project_id, progress=None, stage=next_step)
         return log
 
     def _settings(self, project: Project) -> Settings:
@@ -180,7 +194,12 @@ class JobRunner:
 
     def _engine(self, project_id: str, settings: Settings, costs: CostTracker) -> ScriptEngine:
         llms = self._llms_factory(settings, costs) if self._llms_factory else None
-        return ScriptEngine(settings, costs, llms=llms, log=self._engine_log(project_id))
+        log = self._engine_log(project_id)
+        engine = ScriptEngine(settings, costs, llms=llms, log=log)
+        for client in (engine.llms.cloud, engine.llms.local):
+            if client is not None:
+                client.on_retry = log
+        return engine
 
     def _transcript_text(self, project: Project) -> str:
         path = self.store.transcript_path(project)

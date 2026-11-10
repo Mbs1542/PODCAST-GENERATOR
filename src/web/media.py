@@ -65,6 +65,7 @@ class MediaItem:
     parent: str = ""               # the download a transcription came from
     project: str = ""              # the podcast project made from it
     log: List[str] = field(default_factory=list)
+    stage_started: float = 0.0     # epoch seconds when `stage` last changed (elapsed time and ETA)
 
 
 def _kind_of(path: Path) -> str:
@@ -124,6 +125,8 @@ class MediaStore:
             item = self.get(item_id)
             if item is None:
                 raise KeyError(item_id)
+            if "stage" in changes and re.sub(r"\d+", "#", changes["stage"] or "") != re.sub(r"\d+", "#", item.stage or ""):
+                item.stage_started = time.time() if changes["stage"] else 0.0
             for key, value in changes.items():
                 setattr(item, key, value)
             self.save(item)

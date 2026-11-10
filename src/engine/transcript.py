@@ -301,6 +301,7 @@ class TranscriptCleaner:
         windows = _windows(paragraphs)
         self.logger.info("Cleaning %d paragraphs in %d windows", len(paragraphs), len(windows))
         for window_index, window in enumerate(windows, start=1):
+            self.log(f"Stage 1: cleaning part {window_index}/{len(windows)}")
             result = self._ask_model(window, window_index) if self.checker else None
             if result is None:
                 starts = _fallback_starts(window)
