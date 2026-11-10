@@ -10,12 +10,41 @@ from __future__ import annotations
 
 import os
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
 DEFAULT_MODEL = "ivrit-ai/whisper-large-v3-turbo-ct2"
+# ivrit.ai's model is tuned for Hebrew; other languages (and auto-detect) get the general turbo model
+GENERAL_MODEL = "large-v3-turbo"
+TRANSCRIBE_LANGUAGES = {"he": "עברית", "en": "English", "auto": "זיהוי אוטומטי"}
+
+
+def model_for_language(language: str) -> str:
+    return DEFAULT_MODEL if language == "he" else GENERAL_MODEL
+
+
+# Loading the 1.6 GB model takes 10-30 seconds; a batch of files reuses one loaded copy
+_MODEL_CACHE: dict = {}
+_MODEL_LOCK = threading.Lock()
+
+
+def release_models() -> None:
+    """Free the loaded models (GPU memory) once a batch is done."""
+    with _MODEL_LOCK:
+        _MODEL_CACHE.clear()
+
+
+def _load_model(name: str, device: str, compute_type: str, models_dir: Path):
+    from faster_whisper import WhisperModel
+
+    key = (name, device, compute_type, str(models_dir))
+    with _MODEL_LOCK:
+        if key not in _MODEL_CACHE:
+            _MODEL_CACHE[key] = WhisperModel(name, device=device, compute_type=compute_type, download_root=str(models_dir))
+        return _MODEL_CACHE[key]
 MEDIA_EXTENSIONS = {
     ".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".wmv",
     ".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg", ".opus", ".wma",
@@ -152,7 +181,7 @@ class HebrewTranscriber:
         progress: Optional[Callable[[float, float], None]] = None,
     ) -> List[TranscriptSegment]:
         try:
-            from faster_whisper import WhisperModel
+            import faster_whisper  # noqa: F401
         except ImportError as exc:
             raise TranscribeError("The transcriber is not installed (pip install -r requirements-transcribe.txt).") from exc
 
@@ -161,10 +190,10 @@ class HebrewTranscriber:
             compute_type = "float16" if device == "cuda" else "int8"
             try:
                 self.log(f"Loading {self.model} on {device} ({compute_type})...")
-                model = WhisperModel(self.model, device=device, compute_type=compute_type, download_root=str(self.models_dir))
+                model = _load_model(self.model, device, compute_type, self.models_dir)
                 segments, info = model.transcribe(
                     str(media_path),
-                    language=self.language,
+                    language=None if self.language == "auto" else self.language,
                     beam_size=5,
                     vad_filter=True,
                     # Long lectures: not conditioning on previous text avoids repetition loops

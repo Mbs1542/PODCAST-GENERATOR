@@ -25,6 +25,7 @@ from ..audio.dialogue_tts import DIALOGUE_PROVIDERS, DialogueTTSError, build_dia
 from ..engine import ScriptEngine
 from ..transcribe import HebrewTranscriber, TranscribeError, download_url, to_srt, to_text
 from ..utils import CostTracker, Settings, VoiceProfileManager, get_logger
+from ..utils.keep_awake import keep_awake
 from .projects import Project, ProjectStore
 from .settings_store import SettingsStore, apply_project_options
 
@@ -141,7 +142,8 @@ class JobRunner:
             project_id, kind, force = self._queue.get()
             self._busy.set()
             try:
-                getattr(self, f"_run_{kind}")(project_id, force)
+                with keep_awake():  # a 40-minute transcription must not be cut off by sleep
+                    getattr(self, f"_run_{kind}")(project_id, force)
             except Exception as exc:
                 message = friendly_error(exc)
                 self.logger.exception("Job %s failed for %s", kind, project_id)

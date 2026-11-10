@@ -3,7 +3,10 @@
 from .whisper import (
     DEFAULT_MODEL,
     MEDIA_EXTENSIONS,
+    TRANSCRIBE_LANGUAGES,
     HebrewTranscriber,
+    model_for_language,
+    release_models,
     TranscribeError,
     TranscriptSegment,
     download_model,
@@ -17,7 +20,10 @@ from .whisper import (
 __all__ = [
     "DEFAULT_MODEL",
     "MEDIA_EXTENSIONS",
+    "TRANSCRIBE_LANGUAGES",
     "HebrewTranscriber",
+    "model_for_language",
+    "release_models",
     "TranscribeError",
     "TranscriptSegment",
     "download_model",

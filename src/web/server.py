@@ -32,6 +32,8 @@ from ..video.slideshow import Slide
 from .brand import BrandError, BrandStore
 from .gallery import Gallery, GalleryError
 from .jobs import JobError, JobRunner
+from .media import MediaRunner, MediaStore
+from .media_api import register_media_routes
 from .projects import Project, ProjectStore
 from .settings_store import VOICE_SAMPLE, SettingsStore
 
@@ -61,7 +63,8 @@ _SAFE_NAME_RE = re.compile(r"[^\w֐-׿ .()\-]+")
 
 
 class AppState:
-    def __init__(self, root: Path, runner_factory: Optional[Callable[[ProjectStore, SettingsStore], JobRunner]] = None):
+    def __init__(self, root: Path, runner_factory: Optional[Callable[[ProjectStore, SettingsStore], JobRunner]] = None,
+                 media_runner_factory: Optional[Callable[[MediaStore], MediaRunner]] = None):
         self.root = root
         self.token = secrets.token_urlsafe(24)
         self.settings_store = SettingsStore(root)
@@ -73,6 +76,9 @@ class AppState:
         self.runner = runner_factory(self.store, self.settings_store) if runner_factory else JobRunner(self.store, self.settings_store)
         self.runner.brand = self.brand
         self.runner.recover_interrupted()
+        self.media_store = MediaStore(outputs)
+        self.media_runner = media_runner_factory(self.media_store) if media_runner_factory else MediaRunner(self.media_store)
+        self.media_runner.recover_interrupted()
         self.last_ping = time.time()
         self.allowed_hosts: set = set()
         # Network mode (a container or server reached from a phone over a VPN): an access key
@@ -139,8 +145,8 @@ def _sanitize_plan(edited: Dict[str, Any], current: Dict[str, Any], section_ids:
     return plan
 
 
-def create_app(root: Path, runner_factory=None) -> FastAPI:
-    state = AppState(root, runner_factory)
+def create_app(root: Path, runner_factory=None, media_runner_factory=None) -> FastAPI:
+    state = AppState(root, runner_factory, media_runner_factory)
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None)
     app.state.mbs = state
 
@@ -222,7 +228,7 @@ def create_app(root: Path, runner_factory=None) -> FastAPI:
     @app.post("/api/ping")
     def ping() -> Dict[str, Any]:
         state.last_ping = time.time()
-        return {"ok": True, "busy": state.runner.busy}
+        return {"ok": True, "busy": state.runner.busy or state.media_runner.busy}
 
     # -------------------------------------------------------------- settings
 
@@ -450,6 +456,8 @@ def create_app(root: Path, runner_factory=None) -> FastAPI:
             "language": "en" if params.get("language") == "en" else "he",
             "focus": " ".join(str(params.get("focus") or "").split())[:500],
         }
+
+    register_media_routes(app, state, _options)
 
     @app.post("/api/projects/upload")
     async def upload(request: Request) -> Dict[str, Any]:

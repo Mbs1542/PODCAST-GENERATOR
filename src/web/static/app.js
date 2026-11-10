@@ -118,11 +118,13 @@ async function refreshStatus() {
 async function route() {
   clearTimeout(state.timer);
   const hash = location.hash || "#/";
-  const section = hash.startsWith("#/settings") ? "settings" : hash.startsWith("#/look") ? "look" : hash.startsWith("#/new") ? "" : "projects";
+  const section = hash.startsWith("#/settings") ? "settings" : hash.startsWith("#/look") ? "look"
+    : hash.startsWith("#/tools") ? "tools" : hash.startsWith("#/new") ? "" : "projects";
   document.querySelectorAll("[data-nav]").forEach((a) => a.classList.toggle("active", a.dataset.nav === section));
   try {
     if (hash.startsWith("#/settings")) await viewSettings();
     else if (hash.startsWith("#/look")) await viewLook();
+    else if (hash.startsWith("#/tools")) await viewTools(hash.split("/")[2] || "transcribe");
     else if (hash.startsWith("#/new")) await viewNew();
     else if (hash.startsWith("#/p/")) {
       const [id, tab] = hash.slice(4).split("/").map(decodeURIComponent);
@@ -925,6 +927,205 @@ async function viewSettings() {
   };
 }
 
+
+// ------------------------------------------------------------------ tools: transcription and downloads
+
+const MEDIA_STATUS = {
+  uploading: ["מעלה", "run"], queued: ["בתור", ""], running: ["בעבודה", "run"], done: ["מוכן", "ok"],
+  error: ["נכשל", "bad"], cancelled: ["בוטל", ""],
+};
+const FILE_KIND = { video: "וידאו", audio: "שמע", subtitles: "כתוביות (SRT)", text: "טקסט" };
+
+function mediaRow(item) {
+  const [label, cls] = MEDIA_STATUS[item.status] || [item.status, ""];
+  const running = item.status === "running" || item.status === "queued" || item.status === "uploading";
+  const known = typeof item.progress === "number";
+  const files = item.files.map((f, i) => `<a class="btn" href="/api/media/${enc(item.id)}/files/${i}?download=1&t=${enc(TOKEN)}"
+      title="${esc(f.name)}">${esc(FILE_KIND[f.kind] || f.kind)} <span class="muted small">${fmtSize(f.size)}</span></a>`).join("");
+  const actions = [
+    running && item.kind === "download" ? `<button class="btn ghost" data-media-cancel="${esc(item.id)}">בטל</button>` : "",
+    item.status === "error" || item.status === "cancelled" ? `<button class="btn" data-media-retry="${esc(item.id)}">נסה שוב</button>` : "",
+    item.kind === "download" && item.status === "done" ? `<button class="btn" data-media-transcribe="${esc(item.id)}">תמלל</button>` : "",
+    item.kind === "transcription" && item.status === "done" ? (item.project
+      ? `<a class="btn" href="#/p/${enc(item.project)}">לפודקאסט שנוצר</a>`
+      : `<button class="btn primary" data-media-podcast="${esc(item.id)}">צור פודקאסט</button>`) : "",
+    !running ? `<button class="btn icon ghost danger" data-media-delete="${esc(item.id)}" aria-label="מחק">✕</button>` : "",
+  ].join("");
+  return `<div class="card card-tight stack" style="gap:8px">
+    <div class="row" style="justify-content:space-between;align-items:flex-start">
+      <div style="min-width:0"><b><bdi>${esc(item.title)}</bdi></b>
+        <div class="muted small" style="overflow-wrap:anywhere"><bdi>${esc(item.kind === "download" ? item.source : `${item.source} · ${item.options.language || "he"}`)}</bdi></div></div>
+      <span class="badge ${cls}">${running ? `<span class="dot"></span>` : ""}${esc(item.stage && running ? item.stage : label)}</span>
+    </div>
+    ${running ? `<div class="progress ${known ? "" : "indeterminate"}"><div style="width:${known ? Math.round(item.progress * 100) : 30}%"></div></div>` : ""}
+    ${item.error ? `<div class="help" style="color:var(--bad)">${esc(item.error)}</div>` : ""}
+    ${files || actions ? `<div class="row" style="flex-wrap:wrap">${files}${actions}</div>` : ""}
+  </div>`;
+}
+
+async function viewTools(tab) {
+  tab = tab === "download" ? "download" : "transcribe";
+  let data = await api("/media");
+  const languages = (selected = "he") => Object.entries(data.languages)
+    .map(([k, v]) => `<option value="${k}" ${k === selected ? "selected" : ""}>${esc(v)}</option>`).join("");
+
+  render(`
+    <div class="page-head"><div><h1>כלים</h1>
+      <div class="sub">תמלול עברית מקבצי וידאו ושמע, והורדת סרטונים מהרשת. כל תמלול אפשר להפוך לפודקאסט בלחיצה.</div></div></div>
+    <div class="subtabs">
+      <button data-tools-tab="transcribe" class="${tab === "transcribe" ? "active" : ""}">תמלול</button>
+      <button data-tools-tab="download" class="${tab === "download" ? "active" : ""}">הורדה מהרשת</button>
+    </div>
+    <div class="stack">
+      ${tab === "transcribe" ? `
+      <div class="card stack">
+        <div class="dropzone" id="t-drop" tabindex="0" role="button">
+          <strong>גרור לכאן קבצי וידאו או שמע, כמה שרוצים</strong>
+          <span class="muted">או לחץ לבחירה · MP4, MKV, MOV, MP3, M4A, WAV · הם יתומללו אחד אחרי השני</span>
+        </div>
+        <input type="file" id="t-files" hidden multiple accept="video/*,audio/*">
+        <div class="form-group">
+          <label class="field"><span>שפת ההקלטה</span><select id="t-lang">${languages()}</select></label>
+        </div>
+        <p class="help" style="margin:0">עברית: המודל של ivrit.ai. שפה אחרת או זיהוי אוטומטי: מודל Whisper הכללי (הורדה חד-פעמית של כ-1.6GB).
+          התמלול רץ על כרטיס המסך כשיש, המחשב לא נכנס לשינה באמצע, והתוצאה היא קובץ כתוביות (SRT) וטקסט.</p>
+        <div id="t-upload" class="muted small"></div>
+      </div>` : `
+      <div class="card stack">
+        <label class="field"><span>קישורים (אחד בכל שורה, עד 50)</span>
+          <textarea id="d-urls" rows="3" class="ltr" placeholder="https://www.youtube.com/watch?v=...&#10;https://johnbryce.sylla.academy/..."></textarea></label>
+        <div class="form-group">
+          <label class="field"><span>איכות</span><select id="d-quality">${data.qualities
+            .map(([k, v]) => `<option value="${k}">${esc(v)}</option>`).join("")}</select></label>
+          <label class="field"><span>עוגיות התחברות (לאתרי קורסים)</span><select id="d-cookies"><option value="">בלי</option>${data.cookies
+            .map((c) => `<option value="${esc(c.id)}">${esc(c.id)}${c.expired ? " (פג תוקף)" : ""}</option>`).join("")}</select></label>
+        </div>
+        <div class="stack" style="gap:6px">
+          <label class="row"><input type="checkbox" id="d-playlist"> כל הפלייליסט או הקורס בקישור (ממוספר לפי הסדר)</label>
+          <label class="row"><input type="checkbox" id="d-subs" checked> כתוביות בעברית ובאנגלית, כשיש</label>
+          <label class="row"><input type="checkbox" id="d-transcribe"> לתמלל אוטומטית אחרי ההורדה
+            <select id="d-lang" style="width:auto">${languages()}</select></label>
+        </div>
+        <details><summary class="small">מתקדם: כתובת מפנה (Referer)</summary>
+          <label class="field"><span>לסרטון מוטמע שמתנגן רק מתוך אתר מסוים</span>
+            <input type="url" id="d-referer" class="ltr" placeholder="https://"></label></details>
+        <div class="row"><button class="btn primary lg" id="d-start">הורד</button>
+          <span class="help">מורידים רק תוכן שמותר לך להוריד, למשל קורסים שאתה רשום אליהם.</span></div>
+      </div>
+      <details class="card stack" id="cookie-box"><summary><b>עוגיות התחברות</b> <span class="muted small">(${data.cookies.length} שמורות)</span></summary>
+        <p class="help">לאתרים שדורשים התחברות (כמו Sylla): מתקינים בדפדפן תוסף כמו "Get cookies.txt LOCALLY", נכנסים לאתר מחוברים,
+          מייצאים את קובץ העוגיות ומעלים אותו כאן. הקובץ נשמר רק במחשב שלך ולא מוצג שוב. כשהוא פג, מייצאים מחדש.</p>
+        <div class="stack" style="gap:6px">${data.cookies.map((c) => `<div class="row" style="justify-content:space-between">
+          <div><b>${esc(c.id)}</b> <span class="muted small"><bdi>${esc(c.domains.slice(0, 3).join(", "))}</bdi> · עודכן ${esc(fmtDate(c.updated))}</span>
+            ${c.login_expires ? `<span class="badge ${c.expired ? "bad" : "ok"}">${c.expired ? "פג תוקף" : `בתוקף עד ${esc(fmtDate(c.login_expires))}`}</span>` : ""}</div>
+          <button class="btn icon ghost danger" data-cookie-delete="${esc(c.id)}" aria-label="מחק">✕</button></div>`).join("")}</div>
+        <div class="form-group">
+          <label class="field"><span>שם</span><input type="text" id="c-name" maxlength="40" placeholder="למשל sylla"></label>
+          <label class="field"><span>קובץ cookies.txt</span><input type="file" id="c-file" accept=".txt"></label>
+        </div>
+        <label class="field"><span>או הדבק את התוכן</span><textarea id="c-text" rows="3" class="ltr"></textarea></label>
+        <div><button class="btn" id="c-save">שמור עוגיות</button></div>
+      </details>`}
+      <div id="media-list" class="stack"></div>
+    </div>`);
+
+  const paintList = () => {
+    const kind = tab === "download" ? "download" : "transcription";
+    const items = data.items.filter((i) => i.kind === kind);
+    const box = document.getElementById("media-list");
+    if (!box) return;
+    box.innerHTML = items.length ? items.map(mediaRow).join("")
+      : `<div class="muted">${tab === "download" ? "עוד אין הורדות." : "עוד אין תמלולים."}</div>`;
+    bindRows();
+    if (data.items.some((i) => ["queued", "running", "uploading"].includes(i.status))) schedule(refresh, 1500);
+  };
+  const refresh = async () => {
+    if (!location.hash.startsWith("#/tools")) return;
+    try { data = await api("/media"); paintList(); } catch (_) { schedule(refresh, 3000); }
+  };
+  const act = async (fn, message) => {
+    try { await fn(); if (message) toast(message); await refresh(); } catch (err) { toast(err.message, true); }
+  };
+  const bindRows = () => {
+    app.querySelectorAll("[data-media-cancel]").forEach((b) => { b.onclick = () => act(() => api(`/media/${enc(b.dataset.mediaCancel)}/cancel`, { method: "POST" })); });
+    app.querySelectorAll("[data-media-retry]").forEach((b) => { b.onclick = () => act(() => api(`/media/${enc(b.dataset.mediaRetry)}/retry`, { method: "POST" })); });
+    app.querySelectorAll("[data-media-delete]").forEach((b) => {
+      b.onclick = () => confirm("למחוק את הפריט ואת הקבצים שלו?") && act(() => api(`/media/${enc(b.dataset.mediaDelete)}`, { method: "DELETE" }));
+    });
+    app.querySelectorAll("[data-media-transcribe]").forEach((b) => {
+      b.onclick = () => act(async () => {
+        await api(`/media/${enc(b.dataset.mediaTranscribe)}/transcribe`, { method: "POST", body: { language: "he" } });
+        location.hash = "#/tools/transcribe";
+      }, "נשלח לתמלול");
+    });
+    app.querySelectorAll("[data-media-podcast]").forEach((b) => {
+      b.onclick = async () => {
+        b.disabled = true;
+        try {
+          const { project } = await api(`/media/${enc(b.dataset.mediaPodcast)}/podcast`, { method: "POST", body: {} });
+          location.hash = `#/p/${enc(project)}`;
+        } catch (err) { b.disabled = false; toast(err.message, true); }
+      };
+    });
+  };
+
+  app.querySelectorAll("[data-tools-tab]").forEach((b) => { b.onclick = () => { location.hash = `#/tools/${b.dataset.toolsTab}`; }; });
+
+  if (tab === "transcribe") {
+    const input = document.getElementById("t-files");
+    const drop = document.getElementById("t-drop");
+    const send = async (files) => {
+      const status = document.getElementById("t-upload");
+      for (const [i, file] of [...files].entries()) {
+        status.textContent = `מעלה ${i + 1} מתוך ${files.length}: ${file.name}`;
+        try {
+          await uploadRaw(`/media/upload?language=${enc(document.getElementById("t-lang").value)}`, file);
+        } catch (err) { toast(`${file.name}: ${err.message}`, true); }
+        await refresh();
+      }
+      status.textContent = "";
+      input.value = "";
+    };
+    drop.onclick = () => input.click();
+    drop.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") input.click(); };
+    input.onchange = () => input.files.length && send(input.files);
+    drop.ondragover = (e) => { e.preventDefault(); drop.classList.add("over"); };
+    drop.ondragleave = () => drop.classList.remove("over");
+    drop.ondrop = (e) => { e.preventDefault(); drop.classList.remove("over"); if (e.dataTransfer.files.length) send(e.dataTransfer.files); };
+  } else {
+    document.getElementById("d-start").onclick = (e) => act(async () => {
+      e.target.disabled = true;
+      try {
+        await api("/media/download", { method: "POST", body: {
+          urls: document.getElementById("d-urls").value, quality: document.getElementById("d-quality").value,
+          cookies: document.getElementById("d-cookies").value, playlist: document.getElementById("d-playlist").checked,
+          subtitles: document.getElementById("d-subs").checked, transcribe: document.getElementById("d-transcribe").checked,
+          language: document.getElementById("d-lang").value, referer: document.getElementById("d-referer").value.trim(),
+        } });
+        document.getElementById("d-urls").value = "";
+      } finally { e.target.disabled = false; }
+    }, "ההורדה התחילה");
+    document.getElementById("c-save").onclick = () => act(async () => {
+      const file = document.getElementById("c-file").files[0];
+      const text = file ? await file.text() : document.getElementById("c-text").value;
+      if (!text.trim()) throw new Error("בחר קובץ או הדבק את התוכן");
+      const res = await fetch(`/api/media/cookies?name=${enc(document.getElementById("c-name").value.trim())}`, {
+        method: "POST", headers: { "X-MBS-Token": TOKEN, "Content-Type": "text/plain" }, body: text,
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body.detail || "השמירה נכשלה");
+      await viewTools("download");
+      document.getElementById("cookie-box").open = true;
+    }, "העוגיות נשמרו");
+    app.querySelectorAll("[data-cookie-delete]").forEach((b) => {
+      b.onclick = () => confirm("למחוק את קובץ העוגיות?") && act(async () => {
+        await api(`/media/cookies/${enc(b.dataset.cookieDelete)}`, { method: "DELETE" });
+        await viewTools("download");
+      });
+    });
+  }
+  paintList();
+}
 
 // ------------------------------------------------------------------ theme
 
