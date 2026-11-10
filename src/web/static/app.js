@@ -141,7 +141,7 @@ async function route() {
   clearTimeout(state.timer);
   const hash = location.hash || "#/";
   const section = hash.startsWith("#/settings") ? "settings" : hash.startsWith("#/look") ? "look"
-    : hash.startsWith("#/tools") ? "tools" : hash.startsWith("#/exam") ? "exam" : hash.startsWith("#/new") ? "" : "projects";
+    : hash.startsWith("#/tools") ? "tools" : hash.startsWith("#/exam") || hash.startsWith("#/review") ? "exam" : hash.startsWith("#/concepts") ? "concepts" : hash.startsWith("#/new") ? "" : "projects";
   document.querySelectorAll("[data-nav]").forEach((a) => a.classList.toggle("active", a.dataset.nav === section));
   try {
     if (hash.startsWith("#/settings")) await viewSettings();
@@ -150,6 +150,8 @@ async function route() {
     else if (hash.startsWith("#/tools")) await viewTools(hash.split("/")[2] || "download");
     else if (hash === "#/exam" || hash === "#/exam/") await viewExams();
     else if (hash.startsWith("#/exam/new")) await viewExamSetup();
+    else if (hash.startsWith("#/review")) await viewReview();
+    else if (hash.startsWith("#/concepts")) await viewConcepts();
     else if (hash.startsWith("#/exam/")) await viewExam(decodeURIComponent(hash.slice(7)));
     else if (hash.startsWith("#/new")) await viewNew();
     else if (hash.startsWith("#/p/")) {
@@ -1068,11 +1070,13 @@ async function viewSettings() {
       </div>
       <div id="test-results" class="test-results"></div>
       <div id="credits-settings"></div>
+      <div id="review-settings"></div>
       <div id="delivery-settings" class="stack"></div>
     </div>
     <audio id="voice-player" hidden></audio>`);
   paintDeliverySettings();
   paintCreditsSettings();
+  paintReviewSettings();
 
   const player = document.getElementById("voice-player");
   const play = (src, button) => {
@@ -2211,4 +2215,5 @@ async function renderVideo(p, el) {
 setInterval(() => api("/ping", { method: "POST" }).catch(() => {}), 20000);
 api("/ping", { method: "POST" }).catch(() => {});
 api("/brand").then((view) => applyLook(view.prefs)).catch(() => applyLook({ theme: "auto", accent: "teal" }));
-route();
+// Every script on the page (exam.js comes after this one) is loaded before the first screen is drawn
+if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", route, { once: true }); else route();

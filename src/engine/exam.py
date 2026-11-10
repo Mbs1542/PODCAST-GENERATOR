@@ -24,6 +24,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
+from .coerce import as_mapping
 from .exam_prompts import (
     BLOOM_BANDS,
     CHECK_SYSTEM,
@@ -35,7 +36,7 @@ from .exam_prompts import (
     topics_prompt,
     write_prompt,
 )
-from .exam_rules import KEYS, assign_positions, blocking, check_item, duplicates, words
+from .exam_rules import KEYS, assign_positions, blocking, check_item, duplicates, repeats_of, words
 from .llm import LLMClient, LLMError
 
 EXAM_VERSION = "1.0"
@@ -46,6 +47,11 @@ MAX_SOURCE_CHARS = 9000
 EMPHASIS_RE = re.compile(r"במבחן|למבחן|חשוב לזכור|חשוב מאוד|שימו לב|זה יופיע|תזכרו|on the exam|important to remember|will be tested",
                          re.IGNORECASE)
 ITEMS_PER_CALL = 5
+MAX_AVOID = 120
+# Practice works best when it is effortful but mostly successful: aim the next set at about this success rate
+TARGET_SUCCESS = (0.70, 0.85)
+LEVEL_PRIOR = {"easy": 0.88, "medium": 0.72, "hard": 0.55}  # expected success before any attempt
+PRIOR_WEIGHT = 4.0  # the prior counts as this many answered questions
 
 Log = Callable[[str], None]
 
@@ -54,7 +60,7 @@ Log = Callable[[str], None]
 class ExamOptions:
     count: int = 10
     mcq_share: float = 1.0          # 1.0 = all multiple-choice, 0.0 = all open, 0.7 = 70/30
-    difficulty: str = "medium"      # easy | medium | hard | mixed
+    difficulty: str = "medium"      # easy | medium | hard | mixed | adaptive (levels from `mix`)
     language: str = "he"
     num_options: int = 4
     focus: List[str] = field(default_factory=list)    # topic names to cover first (and at least once each)
@@ -62,13 +68,15 @@ class ExamOptions:
     style: str = "final"            # final | quick | oral
     instructions: str = ""
     seed: int = 0
+    mix: Dict[str, float] = field(default_factory=dict)       # share per level when difficulty is "adaptive"
+    avoid: List[Dict[str, str]] = field(default_factory=list)  # questions asked before: {"stem", "answer", "topic"}
 
     @classmethod
     def from_dict(cls, raw: Dict[str, Any]) -> "ExamOptions":
         options = cls()
         options.count = max(1, min(60, int(raw.get("count") or options.count)))
         options.mcq_share = max(0.0, min(1.0, float(raw.get("mcq_share", options.mcq_share))))
-        options.difficulty = raw.get("difficulty") if raw.get("difficulty") in (*DIFFICULTIES, "mixed") else "medium"
+        options.difficulty = raw.get("difficulty") if raw.get("difficulty") in (*DIFFICULTIES, "mixed", "adaptive") else "medium"
         options.language = "en" if raw.get("language") == "en" else "he"
         options.num_options = 5 if int(raw.get("num_options") or 4) == 5 else (3 if int(raw.get("num_options") or 4) == 3 else 4)
         options.focus = [str(t)[:120] for t in (raw.get("focus") or [])][:30]
@@ -76,6 +84,14 @@ class ExamOptions:
         options.style = raw.get("style") if raw.get("style") in ("final", "quick", "oral") else "final"
         options.instructions = " ".join(str(raw.get("instructions") or "").split())[:500]
         options.seed = int(raw.get("seed") or 0)
+        mix = raw.get("mix") if isinstance(raw.get("mix"), dict) else {}
+        mix = {d: max(0.0, float(mix.get(d) or 0)) for d in DIFFICULTIES}
+        options.mix = {d: round(v / sum(mix.values()), 3) for d, v in mix.items()} if sum(mix.values()) > 0 else {}
+        if options.difficulty == "adaptive" and not options.mix:
+            options.difficulty = "mixed"
+        options.avoid = [{"stem": str(a.get("stem") or "")[:300], "answer": str(a.get("answer") or "")[:200],
+                          "topic": str(a.get("topic") or "")[:120]}
+                         for a in (raw.get("avoid") or []) if isinstance(a, dict) and a.get("stem")][:MAX_AVOID]
         return options
 
 
@@ -99,6 +115,15 @@ def _clock(seconds: Optional[float]) -> str:
         return ""
     seconds = int(seconds)
     return f"{seconds // 3600}:{seconds % 3600 // 60:02d}:{seconds % 60:02d}" if seconds >= 3600 else f"{seconds // 60}:{seconds % 60:02d}"
+
+
+def _misconception(item: Any) -> str:
+    """The analysis gives mistakes as {"misconception", "correction"} (or, in older analyses, plain text)."""
+    mapping = as_mapping(item)
+    if mapping is not None:
+        wrong, right = str(mapping.get("misconception") or "").strip(), str(mapping.get("correction") or "").strip()
+        return f"{wrong} (correct: {right})" if wrong and right else wrong or right
+    return str(item or "").strip()
 
 
 def _norm(text: str) -> str:
@@ -160,7 +185,7 @@ class ExamBuilder:
                 sections[sid] = {"id": sid, "lecture": lecture.label, "title": section.get("title", ""),
                                  "text": section.get("text", ""), "start": section.get("start"), "end": section.get("end")}
             profile = lecture.profile or {}
-            misconceptions = [m for m in profile.get("misconceptions", []) if m]
+            misconceptions = [m for m in (_misconception(x) for x in profile.get("misconceptions", [])) if m]
             objections = [o for a in profile.get("arguments", []) for o in a.get("objections", []) if o]
             for index, concept in enumerate(profile.get("concepts", [])):
                 concepts.append({
@@ -250,10 +275,9 @@ class ExamBuilder:
                     allocation[index] += 1
 
         # Difficulty for each question, core topics leaning harder in a mixed exam
-        if options.difficulty == "mixed":
-            levels = (["easy"] * round(count * MIXED_SPLIT["easy"]) + ["hard"] * round(count * MIXED_SPLIT["hard"]))
-            levels += ["medium"] * (count - len(levels))
-            levels = levels[:count]
+        if options.difficulty in ("mixed", "adaptive"):
+            split = options.mix if options.difficulty == "adaptive" else MIXED_SPLIT
+            levels = _levels(split, count)
         else:
             levels = [options.difficulty] * count
         order = sorted(range(len(pool)), key=lambda i: -pool[i]["importance"])
@@ -285,6 +309,14 @@ class ExamBuilder:
                 break
         return "\n\n".join(parts)
 
+    @staticmethod
+    def _avoid_for(topic: Dict[str, Any], options: ExamOptions) -> List[str]:
+        """Earlier questions the writer must not repeat: this topic's first, then others, at most 15."""
+        name = _norm(topic["name"])
+        same = [a["stem"] for a in options.avoid if _norm(a.get("topic", "")) == name]
+        other = [a["stem"] for a in options.avoid if _norm(a.get("topic", "")) != name]
+        return (same + other)[:15]
+
     def _write_all(self, blueprint: List[Dict[str, Any]], material: Dict[str, Any], options: ExamOptions) -> Dict[str, Any]:
         questions: List[Dict[str, Any]] = []
         calls = [(cell, cell["items"][i:i + ITEMS_PER_CALL]) for cell in blueprint
@@ -295,7 +327,8 @@ class ExamBuilder:
             sources = self._sources(topic, material)
             try:
                 reply = self.llm.chat_json("exam_write", WRITE_SYSTEM, write_prompt(
-                    topic, items, sources, options.language, options.num_options, options.style, options.instructions),
+                    topic, items, sources, options.language, options.num_options, options.style, options.instructions,
+                    avoid=self._avoid_for(topic, options)),
                     max_tokens=1200 * len(items) + 800, temperature=0.5)
             except LLMError as exc:
                 self.log(f"Exam E4: part {number} failed ({exc}); skipped")
@@ -440,10 +473,15 @@ class ExamBuilder:
 
     def _assemble(self, questions, topics, blueprint, material, options, written, checked, final) -> Dict[str, Any]:
         kept = [q for q in questions if not q.get("dropped")]
+        repeats = 0
         for index in reversed(duplicates(kept)):
             kept.pop(index)
         rank = {"easy": 0, "medium": 1, "hard": 2}
-        if options.difficulty == "mixed":  # easy to hard, topics interleaved within a level
+        for index in reversed(repeats_of(kept, options.avoid)):  # asked in an earlier set: a new set asks new things
+            self.log(f"Exam E7: left out a repeat of an earlier question ({str(kept[index].get('stem'))[:60]})")
+            kept.pop(index)
+            repeats += 1
+        if options.difficulty in ("mixed", "adaptive"):  # easy to hard, topics interleaved within a level
             kept.sort(key=lambda q: (rank[q["difficulty"]], q["topic"]))
         assign_positions(kept, options.seed, options.num_options)
         sections = material["sections"]
@@ -463,7 +501,7 @@ class ExamBuilder:
             "passed_first_check": checked.get("passed", 0),
             "by_difficulty": {d: sum(1 for q in kept if q["difficulty"] == d) for d in DIFFICULTIES},
             "by_type": {t: sum(1 for q in kept if q["type"] == t) for t in ("mcq", "open")},
-            "answer_positions": positions,
+            "answer_positions": positions, "repeats_left_out": repeats,
         }
         self.log(f"Exam E7: {len(kept)} questions ready ({stats['repaired']} rewritten, {stats['dropped']} dropped)")
         return {
@@ -472,3 +510,41 @@ class ExamBuilder:
                         "emphasis": t.get("emphasis", 0)} for t in topics],
             "questions": kept, "stats": stats,
         }
+
+
+def _levels(split: Dict[str, float], count: int) -> List[str]:
+    """`count` difficulty labels in the given shares (largest remainder, so they always add up)."""
+    shares = {d: count * split.get(d, 0.0) for d in DIFFICULTIES}
+    counts = {d: int(math.floor(v)) for d, v in shares.items()}
+    for d in sorted(DIFFICULTIES, key=lambda d: shares[d] - counts[d], reverse=True)[: count - sum(counts.values())]:
+        counts[d] += 1
+    return [d for d in DIFFICULTIES for _ in range(counts[d])]
+
+
+def calibrate_mix(history: Sequence[Dict[str, Any]], target: Sequence[float] = TARGET_SUCCESS) -> Dict[str, Any]:
+    """The difficulty mix whose expected success falls in the target band (70-85%), as hard as that allows.
+
+    history: earlier attempts' "levels" ({"easy": {"share": 0.9, "count": 4}, ...}). Each level's success rate is
+    estimated with a prior (Beta smoothing), so a few answers move it gently. Among mixes on a 10% grid, the one
+    closest to the middle of the band wins; a tie goes to the harder mix.
+    """
+    rates = {}
+    for level in DIFFICULTIES:
+        right = sum((a.get(level) or {}).get("share", 0) * (a.get(level) or {}).get("count", 0) for a in history
+                    if (a.get(level) or {}).get("share") is not None)
+        seen = sum((a.get(level) or {}).get("count", 0) for a in history if (a.get(level) or {}).get("share") is not None)
+        rates[level] = (LEVEL_PRIOR[level] * PRIOR_WEIGHT + right) / (PRIOR_WEIGHT + seen)
+    middle = (target[0] + target[1]) / 2
+    best = None
+    for easy in range(11):
+        for hard in range(11 - easy):
+            mix = {"easy": easy / 10, "medium": (10 - easy - hard) / 10, "hard": hard / 10}
+            expected = sum(mix[d] * rates[d] for d in DIFFICULTIES)
+            hardness = mix["medium"] + 2 * mix["hard"]
+            score = (round(abs(expected - middle), 3), -hardness)
+            if best is None or score < best[0]:
+                best = (score, mix, expected)
+    _, mix, expected = best
+    return {"mix": mix, "expected": round(expected, 3), "rates": {d: round(r, 3) for d, r in rates.items()},
+            "in_band": target[0] <= expected <= target[1], "answers": int(sum(
+                (a.get(d) or {}).get("count", 0) for a in history for d in DIFFICULTIES))}

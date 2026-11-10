@@ -156,7 +156,7 @@ h3 { font-size: 15px; }
 .btn.lg { padding: 11px 22px; font-size: 16px; }
 label.field { display: flex; flex-direction: column; gap: 6px; }
 label.field > span { font-size: 13px; color: var(--muted); font-weight: 600; }
-input[type=text], input[type=url], input[type=password], input[type=number], select, textarea {
+input[type=text], input[type=search], input[type=url], input[type=password], input[type=number], select, textarea {
   width: 100%; padding: 8px 10px; border-radius: var(--radius-sm);
   border: 1px solid var(--border); background: var(--surface);
 }
@@ -388,3 +388,17 @@ dialog.modal h2 { margin: 0; }
 .banner.ok { background: var(--ok-soft); }
 .score-row { display: grid; grid-template-columns: minmax(120px, 1fr) 2fr auto; gap: 10px; align-items: center; }
 .big-score { font-size: 2em; color: var(--accent); }
+
+/* keyboard hints and spaced repetition */
+.keys-hint { font-size: 12px; color: var(--muted); }
+.keys-hint kbd { font: inherit; font-size: 11px; padding: 1px 6px; border: 1px solid var(--border); border-radius: 4px; background: var(--surface-2, transparent); }
+.rate-row { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.rate-row .btn { flex-direction: column; gap: 2px; padding: 8px 6px; }
+.rate-row .btn small { font-size: 11px; opacity: .8; }
+.review-stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 10px; }
+.review-stats div { border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; }
+.review-stats b { display: block; font-size: 20px; }
+@media (max-width: 520px) { .rate-row { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.app-version { font-size: 11px; font-weight: 500; color: var(--faint); margin-inline-start: 2px; align-self: flex-end; }
+.concept-card.imp3 { border-inline-start: 4px solid var(--accent); }
+.concept-card h2 { font-size: 17px; }

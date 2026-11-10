@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import re
 import shutil
 import sys
@@ -31,7 +32,7 @@ WORDS = ["שונות", "מודל", "תחזית", "שגיאה", "נתונים", "
 
 def _phrase(seed: int, size: int = 4) -> str:
     """Distinct wording per question, as real questions have (templated text would look like repeats)."""
-    return " ".join(WORDS[(seed * 7 + i * 3) % len(WORDS)] for i in range(size))
+    return " ".join(random.Random(seed).sample(WORDS, size))
 
 
 def _lecture(label: str, concepts: List[str], misconceptions: List[str]) -> Lecture:

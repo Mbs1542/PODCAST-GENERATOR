@@ -242,3 +242,22 @@ def duplicates(items: Sequence[Dict[str, Any]]) -> List[int]:
                 repeated.append(index)
                 break
     return repeated
+
+
+def repeats_of(items: Sequence[Dict[str, Any]], previous: Sequence[Dict[str, Any]]) -> List[int]:
+    """Indexes of items that repeat a question asked before (previous: {"stem", "answer"}), worded alike or not.
+
+    Same thresholds as `duplicates`: a near-identical stem, or a similar stem with a similar answer.
+    """
+    def answer(item: Dict[str, Any]) -> str:
+        return str(item.get("correct_answer") or item.get("model_answer") or item.get("answer") or "")
+
+    repeated = []
+    for index, item in enumerate(items):
+        stem = str(item.get("stem") or "")
+        for old in previous:
+            similarity = _similar(stem, str(old.get("stem") or ""))
+            if similarity > 0.9 or (similarity > 0.7 and _similar(answer(item), answer(old)) > 0.8):
+                repeated.append(index)
+                break
+    return repeated

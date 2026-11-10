@@ -23,6 +23,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 
+from ..version import __version__
 from ..audio.dialogue_tts import (
     DIALOGUE_PROVIDERS,
     GEMINI_VOICE_STYLES,
@@ -96,6 +97,9 @@ class AppState:
         self.exam_runner = ExamRunner(self.exam_store, self.store, self.settings_store,
                                       llms_factory=getattr(self.runner, "_llms_factory", None))
         self.exam_runner.credits = self.credits
+        from .review import ReviewDeck
+
+        self.review_deck = ReviewDeck(self.exam_store.root)
         self.exam_runner.recover_interrupted()
         self.runner.recover_interrupted()
         self.media_store = MediaStore(outputs)
@@ -212,7 +216,7 @@ def create_app(root: Path, runner_factory=None, media_runner_factory=None) -> Fa
                 return RedirectResponse(f"/#/settings?drive_error={quote(str(exc))}", status_code=303)
             return RedirectResponse("/#/settings?drive=connected", status_code=303)
         html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-        return HTMLResponse(html.replace("__MBS_TOKEN__", state.token))
+        return HTMLResponse(html.replace("__MBS_TOKEN__", state.token).replace("__MBS_VERSION__", __version__))
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -372,7 +376,10 @@ def create_app(root: Path, runner_factory=None, media_runner_factory=None) -> Fa
             state.credits.set_google_balance(balance, rate)
         except (TypeError, ValueError) as exc:
             raise HTTPException(400, str(exc) if str(exc) else "ערך לא תקין")
-        return {"elevenlabs": _voice_account(), "google": state.credits.view()}
+        from starlette.concurrency import run_in_threadpool
+
+        # the ElevenLabs lookup is a network call: off the event loop, so other requests are not held up
+        return {"elevenlabs": await run_in_threadpool(_voice_account), "google": state.credits.view()}
 
     @app.get("/api/estimate")
     def estimate(words: int = 0, minutes: float = 0, voice: str = "", language: str = "he", images: int = 0) -> Dict[str, Any]:
@@ -612,6 +619,9 @@ def create_app(root: Path, runner_factory=None, media_runner_factory=None) -> Fa
     from .exam_api import register_exam_routes
 
     register_exam_routes(app, state)
+    from .concepts import register_concept_routes
+
+    register_concept_routes(app, state)
 
     # -------------------------------------------------------------- output folders & Google Drive
 

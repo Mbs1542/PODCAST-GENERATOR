@@ -9,7 +9,7 @@ lesson analysis. The checking prompt is a blind solver: it never sees which opti
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 from .prompts import language_name
 
@@ -63,13 +63,16 @@ WRITE_SYSTEM = (
 
 
 def write_prompt(topic: Dict[str, Any], items: List[Dict[str, str]], sources: str, language: str,
-                 num_options: int, style: str, instructions: str) -> str:
+                 num_options: int, style: str, instructions: str, avoid: Optional[List[str]] = None) -> str:
     wanted = "\n".join(f"{n}. type={i['type']}, difficulty={i['difficulty']}: {DIFFICULTY_TASKS[i['difficulty']]}"
                        for n, i in enumerate(items, start=1))
     seeds = "\n".join(f"- {m}" for m in topic.get("misconceptions", [])[:8]) or "- (none listed: infer typical student errors)"
     neighbours = ", ".join(topic.get("neighbours", [])[:8]) or "(none)"
     hebrew = _HEBREW_RULES if language == "he" else ""
     extra = f"\nThe student also asks: {instructions}\n" if instructions else ""
+    if avoid:
+        extra += ("\nALREADY ASKED in the student's earlier sets. Do not repeat or reword these; ask about a different "
+                  "aspect, example or step of the topic:\n" + "\n".join(f"- {a}" for a in avoid) + "\n")
     return f"""Write {len(items)} exam question(s) about the topic below, for {STYLES.get(style, STYLES['final'])}.
 Write every question, option, explanation and answer in {language_name(language)}. {hebrew}
 

@@ -20,6 +20,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from ..engine.coerce import as_mapping
+
 FORMATS = {"html": ("text/html; charset=utf-8", ".html"), "md": ("text/markdown; charset=utf-8", ".md"),
            "docx": ("application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".docx")}
 
@@ -59,6 +61,24 @@ class SummaryError(RuntimeError):
 
 # --------------------------------------------------------------------------- content
 
+def item_text(item: Any, *keys: str) -> str:
+    """The analysis gives some lists as plain strings and some as objects ({"question": ...}): always text."""
+    mapping = as_mapping(item)
+    if mapping is not None:
+        return " ".join(str(mapping.get(k) or "").strip() for k in keys if mapping.get(k)).strip()
+    return str(item or "").strip()
+
+
+def misconception_text(item: Any, language: str = "he") -> str:
+    """A common mistake and its correction as one line ({"misconception", "correction"} or a plain string)."""
+    if as_mapping(item) is None:
+        return str(item or "").strip()
+    wrong, right = item_text(item, "misconception"), item_text(item, "correction")
+    if wrong and right:
+        return f"{wrong} — {'In fact' if language == 'en' else 'בפועל'}: {right}"
+    return wrong or right
+
+
 def build_summary(
     profile: Dict[str, Any],
     *,
@@ -94,11 +114,11 @@ def build_summary(
         "facts": [f["claim"] for f in profile.get("key_facts", []) if f.get("claim")],
         "examples": [{"description": e["description"], "illustrates": e.get("illustrates", "")}
                      for e in profile.get("examples", []) if e.get("description")],
-        "misconceptions": [m for m in profile.get("misconceptions", []) if m],
+        "misconceptions": [m for m in (misconception_text(x, language) for x in profile.get("misconceptions", [])) if m],
         "arguments": [{"claim": a["claim"], "raised_by": a.get("raised_by", ""), "support": a.get("support", ""),
                        "objections": [o for o in a.get("objections", []) if o]}
                       for a in profile.get("arguments", []) if a.get("claim")],
-        "open_questions": [q for q in profile.get("open_questions", []) if q],
+        "open_questions": [q for q in (item_text(x, "question") for x in profile.get("open_questions", [])) if q],
         "self_check": [{"name": c["name"], "answer": c.get("definition", "")}
                        for c in concepts if c.get("definition")][:SELF_CHECK_COUNT],
         "chapters": [{"title": c.get("title", ""), "start": c.get("start")} for c in chapters if c.get("title")],

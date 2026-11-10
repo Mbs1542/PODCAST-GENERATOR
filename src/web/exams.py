@@ -98,7 +98,7 @@ class ExamStore:
             return None
 
     def list(self) -> List[Exam]:
-        exams = [self.get(p.name) for p in self.root.iterdir() if (p / "exam.json").exists()]
+        exams = [self.get(p.name) for p in self.root.iterdir() if p.is_dir() and (p / "exam.json").exists()]
         return sorted((e for e in exams if e), key=lambda e: e.created, reverse=True)
 
     def save(self, exam: Exam) -> None:
@@ -144,6 +144,22 @@ class ExamStore:
         return True
 
 
+def load_lectures(projects: Any, project_ids: List[str]) -> List[Lecture]:
+    """The analysed lessons (01_clean + 02_profile) of these projects, labelled L1, L2... in the order given."""
+    lectures = []
+    for number, project_id in enumerate(project_ids, start=1):
+        project = projects.get(project_id)
+        if project is None:
+            raise ExamError("אחד הפרויקטים שנבחרו כבר לא קיים")
+        engine = projects.engine_dir(project)
+        clean = projects.read_json(engine / "01_clean.json")
+        profile = projects.read_json(engine / "02_profile.json")
+        if not clean or not profile:
+            raise ExamError(f"\"{project.title}\" עוד לא עבר ניתוח שיעור. צריך להריץ קודם את שלב התוכנית בפרויקט.")
+        lectures.append(Lecture(label=f"L{number}", title=project.title, sections=clean.get("sections", []), profile=profile))
+    return lectures
+
+
 class ExamRunner:
     """One exam at a time, in the background, keeping the computer awake; spend goes to the credit ledger."""
 
@@ -175,18 +191,7 @@ class ExamRunner:
                                   error="העבודה הופסקה כשהאפליקציה נסגרה. אפשר להפעיל אותה שוב.")
 
     def lectures(self, project_ids: List[str]) -> List[Lecture]:
-        lectures = []
-        for number, project_id in enumerate(project_ids, start=1):
-            project = self.projects.get(project_id)
-            if project is None:
-                raise ExamError("אחד הפרויקטים שנבחרו כבר לא קיים")
-            engine = self.projects.engine_dir(project)
-            clean = self.projects.read_json(engine / "01_clean.json")
-            profile = self.projects.read_json(engine / "02_profile.json")
-            if not clean or not profile:
-                raise ExamError(f"\"{project.title}\" עוד לא עבר ניתוח שיעור. צריך להריץ קודם את שלב התוכנית בפרויקט.")
-            lectures.append(Lecture(label=f"L{number}", title=project.title, sections=clean.get("sections", []), profile=profile))
-        return lectures
+        return load_lectures(self.projects, project_ids)
 
     def _log(self, exam_id: str) -> Callable[[str], None]:
         def log(message: str) -> None:
@@ -194,11 +199,11 @@ class ExamRunner:
             match = _PART_RE.search(message)
             if match:
                 stage, done, total = match.group(1), int(match.group(2)), int(match.group(3))
-                self.store.update(exam_id, stage=f"{STAGE_LABELS[stage]} (חלק {done} מתוך {total})", progress=(done - 1) / total)
+                self.store.update(exam_id, stage=f"{STAGE_LABELS.get(stage, stage)} (חלק {done} מתוך {total})", progress=(done - 1) / total)
                 return
             stage = re.match(r"Exam (E\d):", message)
             if stage:
-                self.store.update(exam_id, stage=STAGE_LABELS[stage.group(1)], progress=None)
+                self.store.update(exam_id, stage=STAGE_LABELS.get(stage.group(1), stage.group(1)), progress=None)
         return log
 
     def _worker(self) -> None:
@@ -261,6 +266,15 @@ class ExamRunner:
 PASS_SHARE = 0.7  # below this share a topic counts as weak and is practised again
 
 
+def _self_score(raw: Any) -> Optional[float]:
+    """The student's own 0-10 score as 0-1; None when missing or not a number (never an error)."""
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return max(0.0, min(10.0, value)) / 10 if value == value else None  # NaN is not a score
+
+
 def score_attempt(result: Dict[str, Any], answers: Dict[str, Any], self_scores: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Score one attempt: multiple-choice exactly; open questions by the student's own 0-10 score against the rubric.
 
@@ -274,8 +288,7 @@ def score_attempt(result: Dict[str, Any], answers: Dict[str, Any], self_scores: 
             score = 1.0 if given == q.get("answer") else 0.0
             rows.append({"id": q["id"], "given": given, "correct": q.get("answer"), "score": score})
         else:
-            raw = self_scores.get(q["id"])
-            score = max(0.0, min(10.0, float(raw))) / 10 if raw not in (None, "") else None
+            score = _self_score(self_scores.get(q["id"]))
             rows.append({"id": q["id"], "given": str(answers.get(q["id"]) or "")[:4000], "score": score})
         if rows[-1]["score"] is None:
             continue
@@ -299,7 +312,8 @@ def score_attempt(result: Dict[str, Any], answers: Dict[str, Any], self_scores: 
 def save_attempt(store: "ExamStore", exam_id: str, attempt: Dict[str, Any]) -> int:
     folder = store.folder(exam_id) / "attempts"
     folder.mkdir(parents=True, exist_ok=True)
-    number = len(list(folder.glob("*.json"))) + 1
+    taken = [int(p.stem) for p in folder.glob("*.json") if p.stem.isdigit()]
+    number = max(taken, default=0) + 1  # never reuses a number, even when a file is missing
     (folder / f"{number}.json").write_text(json.dumps(attempt, ensure_ascii=False, indent=2), encoding="utf-8")
     return number
 
@@ -307,7 +321,7 @@ def save_attempt(store: "ExamStore", exam_id: str, attempt: Dict[str, Any]) -> i
 def list_attempts(store: "ExamStore", exam_id: str) -> List[Dict[str, Any]]:
     folder = store.folder(exam_id) / "attempts"
     attempts = []
-    for path in sorted(folder.glob("*.json"), key=lambda p: int(p.stem)) if folder.exists() else []:
+    for path in sorted((p for p in folder.glob("*.json") if p.stem.isdigit()), key=lambda p: int(p.stem)) if folder.exists() else []:
         try:
             attempts.append({"number": int(path.stem), **json.loads(path.read_text(encoding="utf-8"))})
         except (OSError, ValueError):
@@ -410,3 +424,35 @@ def render_exam_html(result: Dict[str, Any], with_answers: bool, autoprint: bool
 <body><div class="wrap"><div class="toolbar"><button onclick="print()">{e(t['print'])}</button></div>
 <header><h1>{e(result.get('title', ''))}</h1><div class="meta">{e(t['answers'] if with_answers else t['sheet'])} · {count} {e(t['questions'])}</div></header>
 {''.join(blocks)}</div>{script}</body></html>"""
+
+
+# --------------------------------------------------------------------------- history across exams
+
+def related_exams(store: "ExamStore", projects: List[str]) -> List[Exam]:
+    """Finished exams on any of these lessons, newest first."""
+    wanted = set(projects)
+    return [e for e in store.list() if e.status == "done" and wanted & set(e.projects)]
+
+
+def attempt_history(store: "ExamStore", projects: List[str], limit: int = 20) -> List[Dict[str, Any]]:
+    """The per-level results ("levels") of the latest attempts on these lessons, for difficulty calibration."""
+    rows = []
+    for exam in related_exams(store, projects):
+        for attempt in reversed(list_attempts(store, exam.id)):
+            if attempt.get("levels"):
+                rows.append((attempt.get("submitted", ""), attempt["levels"]))
+    rows.sort(key=lambda r: r[0], reverse=True)
+    return [levels for _, levels in rows[:limit]]
+
+
+def asked_before(store: "ExamStore", projects: List[str], limit: int = 120) -> List[Dict[str, str]]:
+    """Questions already given on these lessons (stem, correct answer, topic), so a new set can avoid them."""
+    asked: List[Dict[str, str]] = []
+    for exam in related_exams(store, projects):
+        result = store.result(exam.id) or {}
+        for q in result.get("questions", []):
+            correct = next((o.get("text", "") for o in q.get("options", []) if o.get("correct")), q.get("model_answer", ""))
+            asked.append({"stem": str(q.get("stem") or ""), "answer": str(correct or ""), "topic": str(q.get("topic_name") or "")})
+            if len(asked) >= limit:
+                return asked
+    return asked

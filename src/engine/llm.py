@@ -208,7 +208,7 @@ def _gemini_transient(exc: BaseException) -> bool:
 
 # Cheap mechanical tasks do not need the model's deeper thinking; it only costs time.
 # Analysis, planning and writing keep the model's default.
-_GEMINI_LOW_THINKING_TASKS = {"clean", "verify", "eval_outline", "eval_part"}
+_GEMINI_LOW_THINKING_TASKS = {"clean", "verify", "eval_outline", "eval_part", "gate_review"}
 
 
 @dataclass

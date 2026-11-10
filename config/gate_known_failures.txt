@@ -1,0 +1,24 @@
+# Legacy tests that fail before exam mode (2026-11-10): video composition needs moviepy test assets,
+# and test_workers imports src.outputs, which is not in the repository. Tracked here so a NEW failure blocks.
+# Remove a line when its test passes again.
+tests/test_hybrid_quality.py::test_asset_ordering_logic
+tests/test_hybrid_quality.py::test_guardian_fade_in_allowance
+tests/test_pipeline_video.py::test_pipeline_creates_video_with_dummy_components[azure]
+tests/test_pipeline_video.py::test_pipeline_creates_video_with_dummy_components[elevenlabs]
+tests/test_video_composer.py::TestVideoComposerTimeline::test_create_timeline_with_animations
+tests/test_video_composer.py::TestVideoComposerTimeline::test_create_timeline_with_static_images
+tests/test_workers.py::TestChatWorker::test_chat_worker_initialization
+tests/test_workers.py::TestMetadataSeedWorker::test_seed_worker_initialization
+tests/test_workers.py::TestPipelineWorkerHeartbeat::test_elapsed_time_tracking
+tests/test_workers.py::TestPipelineWorkerHeartbeat::test_worker_custom_timeout
+tests/test_workers.py::TestPipelineWorkerHeartbeat::test_worker_initialization
+tests/test_workers.py::TestProgressStatePersistence::test_load_invalid_json
+tests/test_workers.py::TestProgressStatePersistence::test_load_nonexistent_file
+tests/test_workers.py::TestProgressStatePersistence::test_load_progress_state
+tests/test_workers.py::TestProgressStatePersistence::test_save_progress_state
+tests/test_workers.py::TestStageDetection::test_detect_completed_stage
+tests/test_workers.py::TestStageDetection::test_detect_dialogue_stage
+tests/test_workers.py::TestStageDetection::test_detect_tts_stage
+tests/test_workers.py::TestStageDetection::test_detect_video_stage
+tests/test_workers.py::TestStageDetection::test_unrelated_text_no_stage_change
+tests/test_workers.py::TestWorkerTermination::test_terminate_sets_flag

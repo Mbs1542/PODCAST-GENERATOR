@@ -103,7 +103,7 @@ def to_markdown(result: Dict[str, Any]) -> bytes:
     for q in qs:
         lines.append(f"## {t['question']} {q['number']}")
         lines.append("")
-        lines.append(q.get("stem", ""))
+        lines.append(q.get("stem") or "")
         lines.append("")
         if _is_mcq(q):
             for i, o in enumerate(q["options"]):
