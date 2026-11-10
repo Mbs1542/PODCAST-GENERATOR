@@ -141,13 +141,16 @@ async function route() {
   clearTimeout(state.timer);
   const hash = location.hash || "#/";
   const section = hash.startsWith("#/settings") ? "settings" : hash.startsWith("#/look") ? "look"
-    : hash.startsWith("#/tools") ? "tools" : hash.startsWith("#/new") ? "" : "projects";
+    : hash.startsWith("#/tools") ? "tools" : hash.startsWith("#/exam") ? "exam" : hash.startsWith("#/new") ? "" : "projects";
   document.querySelectorAll("[data-nav]").forEach((a) => a.classList.toggle("active", a.dataset.nav === section));
   try {
     if (hash.startsWith("#/settings")) await viewSettings();
     else if (hash.startsWith("#/look")) await viewLook();
     else if (hash.startsWith("#/tools/podcast")) await viewChainPodcast(new URLSearchParams(hash.split("?")[1] || "").get("items"));
-    else if (hash.startsWith("#/tools")) await viewTools(hash.split("/")[2] || "transcribe");
+    else if (hash.startsWith("#/tools")) await viewTools(hash.split("/")[2] || "download");
+    else if (hash === "#/exam" || hash === "#/exam/") await viewExams();
+    else if (hash.startsWith("#/exam/new")) await viewExamSetup();
+    else if (hash.startsWith("#/exam/")) await viewExam(decodeURIComponent(hash.slice(7)));
     else if (hash.startsWith("#/new")) await viewNew();
     else if (hash.startsWith("#/p/")) {
       const [id, tab] = hash.slice(4).split("/").map(decodeURIComponent);
@@ -1634,7 +1637,7 @@ async function viewChainPodcast(initial) {
 }
 
 async function viewTools(tab) {
-  tab = tab === "download" ? "download" : "transcribe";
+  tab = tab === "transcribe" ? "transcribe" : "download";
   let data = await api("/media");
   const languages = (selected = "he") => Object.entries(data.languages)
     .map(([k, v]) => `<option value="${k}" ${k === selected ? "selected" : ""}>${esc(v)}</option>`).join("");
@@ -1646,8 +1649,8 @@ async function viewTools(tab) {
       <div class="sub">תמלול עברית מקבצי וידאו ושמע, והורדת סרטונים מהרשת. כל תמלול אפשר להפוך לפודקאסט בלחיצה.</div></div></div>
     ${chainSteps(tab === "download" ? "download" : "transcribe")}
     <div class="subtabs">
-      <button data-tools-tab="transcribe" class="${tab === "transcribe" ? "active" : ""}">תמלול</button>
-      <button data-tools-tab="download" class="${tab === "download" ? "active" : ""}">הורדה מהרשת</button>
+      <button data-tools-tab="download" class="${tab === "download" ? "active" : ""}">1. הורדה מהרשת</button>
+      <button data-tools-tab="transcribe" class="${tab === "transcribe" ? "active" : ""}">2. תמלול</button>
     </div>
     <div class="stack">
       ${tab === "transcribe" ? `

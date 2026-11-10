@@ -62,7 +62,8 @@ def _port_free(port: int) -> bool:
 def _idle_watch(server, state) -> None:
     while not server.should_exit:
         time.sleep(15)
-        if time.time() - state.last_ping > IDLE_EXIT_SECONDS and not state.runner.busy and not state.media_runner.busy:
+        if (time.time() - state.last_ping > IDLE_EXIT_SECONDS and not state.runner.busy and not state.media_runner.busy
+                and not state.exam_runner.busy):
             server.should_exit = True
 
 

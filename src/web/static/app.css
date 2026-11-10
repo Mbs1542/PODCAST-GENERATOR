@@ -371,3 +371,20 @@ dialog.modal h2 { margin: 0; }
 .cost-rows { display: grid; gap: 6px; }
 .cost-rows > div { display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; padding: 6px 0; border-bottom: 1px dashed var(--border); }
 .cost-rows > div.total { border-bottom: 0; font-size: 1.05em; }
+
+/* ---------------------------------------------------------------- exam mode */
+.exam-row { text-decoration: none; color: inherit; }
+.chip.topic { cursor: pointer; border: 1px solid var(--border); background: var(--surface); }
+.chip.topic.focus { border-color: var(--accent); background: var(--accent-soft, var(--surface-2)); font-weight: 600; }
+.chip.topic.exclude { text-decoration: line-through; opacity: .6; }
+.practice .stem { font-size: 1.15em; font-weight: 600; margin: 4px 0; }
+.option { display: flex; gap: 10px; align-items: center; width: 100%; text-align: start; padding: 10px 12px; border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--surface); color: var(--text); font: inherit; cursor: pointer; }
+.option:hover:not(:disabled) { border-color: var(--accent); }
+.option .letter { flex: none; width: 26px; height: 26px; border-radius: 50%; border: 1px solid var(--border); display: grid; place-items: center; font-size: 13px; }
+.option.right { border-color: var(--ok); background: var(--ok-soft); }
+.option.wrong { border-color: var(--bad); background: var(--bad-soft); }
+.option:disabled { cursor: default; }
+.banner.ok { background: var(--ok-soft); }
+.score-row { display: grid; grid-template-columns: minmax(120px, 1fr) 2fr auto; gap: 10px; align-items: center; }
+.big-score { font-size: 2em; color: var(--accent); }

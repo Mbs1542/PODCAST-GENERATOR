@@ -90,6 +90,13 @@ class AppState:
 
         self.credits = CreditsLedger(Path(outputs) / "private")
         self.runner.credits = self.credits
+        from .exams import ExamRunner, ExamStore
+
+        self.exam_store = ExamStore(outputs)
+        self.exam_runner = ExamRunner(self.exam_store, self.store, self.settings_store,
+                                      llms_factory=getattr(self.runner, "_llms_factory", None))
+        self.exam_runner.credits = self.credits
+        self.exam_runner.recover_interrupted()
         self.runner.recover_interrupted()
         self.media_store = MediaStore(outputs)
         self.media_runner = media_runner_factory(self.media_store) if media_runner_factory else MediaRunner(self.media_store)
@@ -602,6 +609,9 @@ def create_app(root: Path, runner_factory=None, media_runner_factory=None) -> Fa
         }
 
     register_media_routes(app, state, _options)
+    from .exam_api import register_exam_routes
+
+    register_exam_routes(app, state)
 
     # -------------------------------------------------------------- output folders & Google Drive
 

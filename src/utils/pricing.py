@@ -195,3 +195,22 @@ def estimate_podcast(
                   "high": round(script_cost * high + voice_cost + image_cost, 2)},
         "gemini_price_doubles": GEMINI_PRICE_DOUBLING.isoformat(),
     }
+
+
+def estimate_exam(questions: int, topics: int, source_chars: int, lectures: int = 1,
+                  writer_model: str = "gemini-3.8-flash", writer: str = "gemini", today: Optional[date] = None) -> dict:
+    """What an exam is likely to cost: writing (one call per up to 5 questions of a topic, with its sources),
+    the blind check (one call per topic), rewrites (about a quarter of the questions) and, for several
+    lectures, the topic merge. Gemini thinking is billed as output. The result is a range."""
+    calls = max(1, topics) + questions // 5
+    sources = min(source_chars, 9000 * max(1, topics)) / 2.6  # Hebrew: about 2.6 characters per token
+    per_call_sources = sources / max(1, topics)
+    prompt = calls * (2500 + per_call_sources) + topics * (per_call_sources + 300 * 5) + questions * 0.25 * (2500 + per_call_sources)
+    completion = questions * 650 * 2.2 + topics * 900 + questions * 0.25 * 900 * 2.2
+    if lectures > 1:
+        prompt += 1500 + 80 * topics
+        completion += 3000
+    cost = 0.0 if writer == "local" else llm_token_cost(writer_model if writer == "gemini" else "gpt", int(prompt), int(completion), today)
+    low, high = ESTIMATE_RANGE
+    return {"questions": questions, "low": round(cost * low, 3), "high": round(cost * high, 3),
+            "tokens": {"prompt": int(prompt), "completion": int(completion)}}
