@@ -92,8 +92,19 @@ def test_hebrew_library_lists_native_voices_and_free_plan_limits():
     result = list_elevenlabs_library("key", http=fake)
     assert fake.calls[0][2]["language"] == "he"
     assert [v["name"] for v in result["voices"]] == ["Danit", "Zina"]  # usable first, broken entries dropped
-    assert result["voices"][0]["added"] is True and result["voices"][1]["needs_paid"] is True
+    assert result["voices"][0]["added"] is True
+    # On the free plan ElevenLabs refuses every library voice through the API (402), whatever the voice's own flag
+    assert all(v["needs_paid"] for v in result["voices"]) and result["api_blocked"] is True
     assert (result["tier"], result["slots_used"], result["slots_limit"]) == ("free", 1, 3)
+
+
+def test_the_free_plan_library_refusal_is_explained_in_hebrew():
+    from src.audio.dialogue_tts import _elevenlabs_error
+
+    reply = _Reply(402, {"detail": {"status": "payment_required",
+                                    "message": "Free users cannot use library voices via the API. Please upgrade your subscription."}})
+    message = _elevenlabs_error(reply)
+    assert "במנוי החינמי" in message and "Gemini" in message
 
 
 def test_adding_a_library_voice_returns_its_account_id_and_explains_a_full_account():

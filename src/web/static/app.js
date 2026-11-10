@@ -1097,10 +1097,12 @@ async function viewSettings() {
         <span class="help">קולות שהוקלטו בעברית על ידי דוברי עברית, עם דוגמה בעברית.</span></div>`;
     }
     const { voices, slots_used: used, slots_limit: limit, tier } = hebrewLibrary;
+    const freePlan = tier === "free";  // ElevenLabs refuses every library voice through the API on the free plan
+    if (freePlan) voices.forEach((v) => { v.needs_paid = true; });
     const rows = voices.map((v) => {
       const details = [GENDER_HE[v.gender] || v.gender, AGE_HE[v.age] || v.age, v.descriptive].filter(Boolean).join(" · ");
       const chosenFor = v.account_id ? keys.filter((k) => draft[k] === v.account_id) : [];  // "" must not match an empty choice
-      const buttons = v.needs_paid ? `<span class="badge">דורש מנוי בתשלום</span>` : keys.map((k, i) =>
+      const buttons = v.needs_paid ? `<span class="badge">${freePlan ? "במנוי בתשלום" : "דורש מנוי בתשלום"}</span>` : keys.map((k, i) =>
         `<button class="btn ${chosenFor.includes(k) ? "primary" : ""}" data-hebrew-assign="${k}" data-id="${esc(v.voice_id)}">${i ? "לנועה" : "לרועי"}</button>`).join("");
       return `<div class="voice-row">
         <button class="btn icon" data-hebrew-play="${esc(v.voice_id)}" ${v.preview_url ? "" : "disabled"} aria-label="השמע את ${esc(v.name)} בעברית">▶</button>
@@ -1108,8 +1110,13 @@ async function viewSettings() {
           ${v.added ? `<span class="badge ok">בחשבון</span>` : ""}</div>${buttons}</div>`;
     }).join("");
     const slots = limit ? `בחשבון שלך ${used} מתוך ${limit} קולות נוספים${tier === "free" ? " (מנוי חינמי)" : ""}. בחירת קול שעוד לא בחשבון מוסיפה אותו ותופסת מקום אחד.` : "";
+    const stuck = freePlan ? voices.filter((v) => v.account_id && keys.some((k) => draft[k] === v.account_id)).map((v) => v.name.split(" - ")[0]) : [];
+    const blocked = freePlan ? `<div class="banner warn"><p>${stuck.length ? `<b>הקולות שבחרת (${esc(stuck.join(", "))}) לא יעבדו בהקראה במנוי החינמי.</b> ` : ""}<b>במנוי החינמי של ElevenLabs אי אפשר להשתמש בקולות האלה מהאפליקציה.</b>
+        ElevenLabs מאפשר קולות מהספרייה דרך ה-API רק במנוי בתשלום (Starter ומעלה). אפשר לשמוע אותם כאן כדי להחליט.
+        בינתיים: בחר קול מהקולות שבחשבון (למטה), או עבור לקולות של Gemini למעלה ("מי מקריא"), שגם הם קוראים עברית.</p></div>` : "";
     return `<div class="hebrew-voices stack" style="gap:8px"><b>קולות בעברית (${voices.length})</b>
-      <p class="help" style="margin:0">▶ משמיע דוגמה בעברית. ${slots}</p>
+      ${blocked}
+      <p class="help" style="margin:0">▶ משמיע דוגמה בעברית. ${freePlan ? "" : slots}</p>
       ${rows ? `<div class="voice-list">${rows}</div>` : `<div class="muted">לא נמצאו קולות בעברית בספרייה.</div>`}</div>`;
   };
 

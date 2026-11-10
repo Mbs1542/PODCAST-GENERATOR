@@ -167,6 +167,11 @@ def _elevenlabs_error(response: Any) -> str:
         return "מפתח ElevenLabs שגוי (401)."
     if "quota" in f"{status} {message}".lower():
         return "נגמרה מכסת התווים בחשבון ElevenLabs."
+    if response.status_code == 402 and "library voices" in message.lower():
+        return ("במנוי החינמי של ElevenLabs אי אפשר להשתמש בקולות מהספרייה דרך האפליקציה. "
+                "בחר קול מהקולות המובנים בחשבון, עבור לקולות של Gemini, או שדרג את המנוי ב-ElevenLabs (Starter ומעלה).")
+    if response.status_code == 402:
+        return f"ElevenLabs דורש מנוי בתשלום לפעולה הזו (402): {message or status}"
     if "voice_limit" in f"{status} {message}".lower() or "maximum amount of custom voices" in message.lower():
         return "הגעת למספר הקולות המרבי בחשבון ElevenLabs. מחק קול שלא בשימוש (ב-elevenlabs.io תחת My Voices) או שדרג את המנוי."
     return f"ElevenLabs החזיר שגיאה {response.status_code}: {message or status}"
@@ -211,15 +216,17 @@ def list_elevenlabs_library(api_key: str, language: str = "he", http: Any = None
             tier, used, limit = info.get("tier", ""), info.get("voice_slots_used"), info.get("voice_limit")
     except requests.RequestException:
         pass
+    # ElevenLabs answers 402 "Free users cannot use library voices via the API" for every library voice on the
+    # free plan; the library's free_users_allowed flag is about the website, so it does not help here
     free = tier == "free"
     voices = [{
         "voice_id": v.get("voice_id", ""), "public_owner_id": v.get("public_owner_id", ""), "name": v.get("name", ""),
         "gender": v.get("gender", ""), "age": v.get("age", ""), "descriptive": v.get("descriptive", ""),
         "use_case": v.get("use_case", ""), "preview_url": v.get("preview_url", ""),
-        "added": bool(v.get("is_added_by_user")), "needs_paid": free and not v.get("free_users_allowed", True),
+        "added": bool(v.get("is_added_by_user")), "needs_paid": free,
     } for v in response.json().get("voices", []) if v.get("voice_id") and v.get("public_owner_id")]
     voices.sort(key=lambda v: (v["needs_paid"], v["name"].lower()))
-    return {"voices": voices, "tier": tier, "slots_used": used, "slots_limit": limit}
+    return {"voices": voices, "tier": tier, "slots_used": used, "slots_limit": limit, "api_blocked": free}
 
 
 def add_elevenlabs_library_voice(api_key: str, public_owner_id: str, voice_id: str, name: str, http: Any = None) -> str:
