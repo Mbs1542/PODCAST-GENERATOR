@@ -1,0 +1,692 @@
+# M.B.S Studio Exam Mode: Open-Source Projects, Evidence and Design Recommendations
+
+*Research date: 2026-11-10. Scope: open-source LLM quiz and MCQ generation, distractor generation, difficulty control, automatic item-quality checks, quiz export formats and spaced repetition. The aim is to design an "Exam mode" for M.B.S Studio.*
+
+> **How to read this report.**
+> - Claims about third parties cite a numbered source in [Sources](#10-sources).
+> - GitHub star, fork and last-push figures come from the GitHub REST API, queried on 2026-11-10. Anything I could not confirm is marked **unverified**.
+> - For source code, the claim is about what I read in a shallow clone, with the file path given.
+> - Paper claims marked *(abstract)* come from the abstract page only. Claims marked *(search snippet)* come from search-result text and not the full paper, so check them before you quote them publicly.
+> - My own design recommendations are labelled **Recommendation**.
+> - Cloned code was only read, never installed or run. Clones are in `scratchpad/exam-oss/`.
+
+---
+
+## 1. Executive summary: top 8 insights for our design
+
+1. **Do not let the LLM choose where the correct answer goes.** Several studies report that LLMs place the correct answer in a skewed, non-uniform way, and that the skew is consistent within model families [16]. Evaluation-side work finds similar label and position biases [33]. Have Gemini return `correct_answer` and `distractors[]` as **separate fields**. The app then shuffles them with a seeded RNG and balances key positions across the whole exam (for example A/B/C/D each about 25%, with no long runs). This removes the bias by construction. The open projects we read either let the model pick the letter (EduAid's `correct_answer: "A"` [2]) or shuffle locally per question without balancing across the exam (EduAid's Google-Forms export and educhain's math path).
+
+2. **Our lesson profile is a better generation spec than anything the open projects use.** Educhain plans by topic, then subtopic, then learning objective, then question count [1]. EduAid plans from extracted keyphrases or named entities [2]. Our profile already has `learning_objectives`, `concepts[].section_ids/depends_on/importance`, `key_facts[].section_id`, `examples`, `misconceptions` and `arguments[].objections`. **Recommendation:** build an explicit *exam blueprint* (a table of specifications) before generating anything. Each planned item is a concept/objective × Bloom level × source `section_ids`, weighted by `importance`. Each LLM call then writes one blueprint cell, grounded on those transcript sections. Both projects that do bulk generation ([1] bulk mode, [18]) work per objective.
+
+3. **Distractors should come from modelled student errors, not from "similar words".** The ETH Zürich EMNLP-2026 study [15] found that the best LLM distractor generators follow this process:
+   1. solve the item first;
+   2. list specific student errors;
+   3. simulate each error to get a wrong answer;
+   4. select the most plausible distractors.
+
+   Giving the model the correct solution improved alignment with human distractors by a relative 6.4% [15]. Their `enforce_process` prompt is a ready template (Section 3.4). Our profile's `misconceptions`, `arguments[].objections` and neighbouring concepts (`depends_on`) are the natural seeds for these errors. EduAid's sense2vec "similar words" approach [2] is English-only and can produce near-synonyms of the key, which gives the item two correct answers.
+
+4. **Run a two-layer quality gate.** Use cheap deterministic rules first, then targeted LLM verification only when a rule fires. SAQUET implements the 19-criterion Item-Writing-Flaws (IWF) rubric exactly this way [3][13]:
+   - **Rules:** regex or word lists for "all/none of the above", absolute and vague terms, negative stems, and longest-option-is-correct (key more than about a third longer than any distractor); embeddings for implausible distractors; NER for logical cues.
+   - **LLM verification:** a 1-10 score, sampled up to 3 times and resolved by mode or average.
+
+   The rule-based detector matched more human-identified flaws than GPT-4 alone in the EC-TEL 2023 study (91% vs 79%, *search snippet*) [14]. SAQUET reports over 94% accuracy *(abstract)* [13]. Every rule needs a **Hebrew word list** (Section 5.3).
+
+5. **Verify the answer key with a "blind solver".** This is the most important hallucination guard:
+   - Give a separate LLM call the stem, the shuffled options and the cited transcript sections, but not the key.
+   - Ask it to pick every option it can defend from the source.
+   - Reject or repair the item when it picks a different option, picks more than one, or cannot point to a supporting `section_id`.
+
+   SAQUET's `more_than_one_correct` asks the model to list *all* correct answers and passes only when exactly one comes back [3]. This fits our existing fact-check stage directly.
+
+6. **Difficulty should be generated by Bloom level and distractor closeness, then measured. Never create it by rewording.** EduAid's "hard" mode makes questions harder by swapping in rarer synonyms, converting to passive voice and inserting "precisely/specifically" [2]. That is construct-irrelevant difficulty: it tests reading, not knowledge. In educhain's default `generate_questions` template, the `difficulty_level` kwarg is never placed in the prompt (Section 3.1), and the bulk template hard-codes "5th grade level" and "medium difficulty" [1]. **Recommendation:**
+   - Map easy, medium and hard to Bloom levels, the number of integrated concepts, and how close the distractors are (Section 6).
+   - Have an LLM classifier check the Bloom label after generation.
+   - Calibrate empirically from the user's own answers using classical item statistics (p-value and discrimination).
+
+   LLM-only Bloom and difficulty judgements do not match human experts reliably [18][35].
+
+7. **Export through standard text formats first.** Moodle XML, GIFT, Anki CSV and QTI 1.2 can all be written with plain Python string templates and no new dependencies:
+   - **Moodle XML:** UTF-8, HTML inside CDATA, `fraction="100"` marks the key [26].
+   - **GIFT:** `=` marks the key, `~` marks a distractor, `#` adds feedback; escape `~ = # { } :` [27].
+   - **Anki:** CSV with `#separator`, `#html`, `#deck`, `#tags` headers. The first field is the duplicate key [28].
+   - **QTI 1.2 for Canvas:** a zip with `imsmanifest.xml`, `<id>/<id>.xml` and `<id>/assessment_meta.xml`. text2qti (BSD-3) shows the exact templates [6].
+
+   `.apkg` output needs genanki (MIT) [7]. Google Forms needs OAuth and a two-step API flow [29][30], which breaks the local-first model, so leave it for later. For RTL, wrap the stem and every option in `dir="rtl"` (or `dir="auto"`) HTML. None of the exporters we read handle direction.
+
+8. **Personalization should be a closed loop, not a prompt adjective.**
+   - Store every answer with `concept`, `bloom` and `section_ids`.
+   - Schedule re-asks with FSRS: py-fsrs, MIT, `Rating.Again/Hard/Good/Easy`, with `desired_retention` defaulting to 0.9 [9].
+   - Bias the next blueprint toward weak concepts.
+   - Turn misconceptions the user actually chose (from distractor tags) into review cards.
+
+   None of the cloned quiz generators keep learner state. This is open ground where M.B.S Studio can stand out.
+
+---
+
+## 2. Projects at a glance
+
+Stars, forks and last push come from the GitHub API on 2026-11-10. "Cloned" means I read the source.
+
+| Project | Link | Stars / activity (verified) | License | What it does | What we should borrow |
+|---|---|---|---|---|---|
+| **educhain** (cloned) | github.com/satvik314/educhain [1] | 388 stars, 76 forks, last push 2026-05-29 | MIT | LangChain library. MCQ, short-answer, T/F and fill-in-blank from topic, PDF, URL or YouTube; bulk generation per learning objective; study guides, flashcards, "pedagogy" content (incl. Bloom); CSV/PDF export | Pydantic schemas (`BulkMCQ` with `difficulty` + `metadata.learning_objective`); per-objective bulk loop with retries + duplicate tracking; `StudyGuide` section list |
+| **EduAid** (cloned) | github.com/AOSSIE-Org/EduAid [2] | 175 stars, 428 forks, last push 2026-03-17 | GPL-3.0 (copyleft; do not copy code) | Flask backend + web/extension; T5 QG + sense2vec distractors, local Qwen3-0.6B LLM path, QA-model answer checks, Google Forms export | Same-NER-type distractor sampling; QA-evaluator ranking idea; anti-patterns (Section 8) |
+| **SAQUET** (cloned) | github.com/StevenJamesMoore/SAQUET [3] | 8 stars, 4 forks, last push 2025-12-19 | **No license file** (all rights reserved; read only, re-implement from paper) | Notebook implementing 19 IWF criteria with rules + GPT-4o rating verification | The whole rule list, thresholds, LLM verifier prompt shape, 3-sample voting |
+| **ECTEL23** (cloned) | github.com/StevenJamesMoore/ECTEL23 [4] | 3 stars (per GitHub search API), last push 2025-02-01 | No license | Earlier rule-based vs GPT-4 IWF code; README points to SAQUET | Historical baseline only |
+| **llm-student-modeling-strategies** (cloned) | github.com/eth-lre/llm-student-modeling-strategies [5] | 2 stars, 0 forks, last push 2026-09-15 | MIT | Research code for EMNLP-2026 Findings paper on LLM distractor generation (Eedi math, SciQ science) | `enforce_process` distractor prompt; misconception-propose → simulate split; LLM answer-equivalence checker; distractor metrics (repetitions, "distractor equals key") |
+| **text2qti** (cloned) | github.com/gpoore/text2qti [6] | 242 stars, 92 forks, last push 2026-08-21 | BSD-3-Clause | Converts Markdown-like plain text into QTI 1.2 zip (Canvas) | Exact QTI 1.2 item/manifest templates; plain-text quiz syntax as an internal interchange format |
+| genanki | github.com/kerrickstaley/genanki [7] | 2,804 stars, last push 2024-12-30 | MIT | Python library to write Anki `.apkg` | Stable GUIDs via `guid_for`, hard-coded model/deck IDs |
+| anki-llm | github.com/raine/anki-llm [8] | 309 stars, last push 2026-10-10 | MIT | CLI for bulk-generating/processing Anki cards with LLMs via AnkiConnect (features from search snippet, not read) | Possibly AnkiConnect push flow (unverified, not read) |
+| py-fsrs | github.com/open-spaced-repetition/py-fsrs [9] | 529 stars, last push 2026-08-09 | MIT | Official Python FSRS scheduler | Spaced-repetition scheduling for missed items/concepts |
+| MedQG (MCQG-SRefine) | github.com/bio-nlp/MedQG [10] | 14 stars, last push 2025-01-24 | No license on GitHub; paper says CC-BY-NC 4.0 (search snippet) | Generate → critique → correct loop for USMLE MCQs [17] | Self-critique/correction loop design (not read) |
+| AEQG-MCQ-Distractors-Physics | github.com/nicyscaria/AEQG-MCQ-Distractors-Physics [11] | 2 stars, last push 2025-05-09 | NOASSERTION | Concept-map + Bloom MCQ generation (physics) | Bloom-level prompting ideas (not read) |
+| Hebrew-Question-Answering-Dataset (HeQ) | github.com/NNLP-IL/Hebrew-Question-Answering-Dataset [12] | 26 stars, last push 2024-12-05 | CC-BY-4.0 | 30,147 Hebrew extractive QA pairs [31] | Hebrew eval data for answerability/blind-solver tests; note F1/EM unsuitable for Hebrew [31] |
+| quizicist | github.com/cognitive-engineering-lab/quizicist | 28 stars, last push 2023-05-17 | none listed | LLM quiz tool (stale) | Not studied |
+
+Other tools seen only in search results (**unverified**, not read): Quizard, aliktk/mcq-generator, Quiz-Generator (EvaDB), qageneratorllm, AnkiGPT (closed backend), OpenMCQ (a custom GPT; I found no source code).
+
+---
+
+## 3. Deep dive per cloned repository
+
+### 3.1 educhain (MIT) [1]
+
+**Prompt design.** The default `generate_questions` prompt is minimal. From `educhain/engines/qna_engine.py` (`_get_prompt_template`):
+
+```python
+base_template = f"""
+Generate {{num}} {question_type} question(s) based on the given topic.
+Topic: {{topic}}
+
+For each question, provide:
+1. The question
+2. The correct answer
+3. An explanation (optional)
+"""
+```
+
+The bulk path (`DEFAULT_PROMPT_TEMPLATE`, same file) conditions on the learning objective, but it hard-codes level and difficulty:
+
+```text
+Generate multiple-choice questions for the following topic and learning objective:
+Topic: {topic}
+Subtopic: {subtopic}
+Learning Objective: {learning_objective}
+Each question should:
+1. Be clear and concise
+2. Test understanding of the specific learning objective
+3. Include a detailed explanation of the answer
+4. Be appropriate for 5th grade level
+5. Be of medium difficulty
+```
+
+In the JSON example that follows, Option A is the correct one (`{"text": "Option A", "correct": "true"}`). A worked example like that tends to anchor the model's answer position (my inference, consistent with [16]).
+
+**Output schema.** `educhain/models/qna_models.py`:
+- `MultipleChoiceQuestion(question, answer: str, explanation, options: List[str])`. The key is a free string that is never checked against `options`.
+- `BulkMCQ(question, options: List[Option{text, correct:"true"/"false"}], explanation, difficulty, metadata{topic, subtopic, learning_objective})`.
+- `ShortAnswerQuestion` adds `keywords: List[str]`, which is useful as a grading rubric seed.
+
+Parsing uses LangChain's `PydanticOutputParser`. On a parse error, `generate_questions` prints the error and returns an empty model. That is a silent failure.
+
+**Distractor generation.** The LLM writes distractors in the same call as the stem. There is also a one-shot helper `generate_similar_options`, which asks for "incorrect but plausible options similar to this correct answer", separated by semicolons. The math path computes wrong numeric values and then calls `random.shuffle(question.options)`.
+
+**Difficulty control.** `difficulty` exists only as an output label. In the default `generate_questions` path, a `difficulty_level=` kwarg is not referenced by the template (`input_variables=["num","topic"]`), so it does not reach the prompt. The README's "Hard" example therefore depends on a custom template that includes `{difficulty_level}`. The RAG path does append `- Difficulty Level: …` to its query. Bloom appears only in `ContentEngine.generate_pedagogy_content` (lesson content per Bloom level), not in question generation.
+
+**Validation.**
+- Pydantic validation of each item.
+- A `tenacity` retry (3 attempts) on JSON or validation errors.
+- Per-objective target counts with retry bookkeeping.
+- Duplicate detection by exact stem string (`existing_questions.add(q_dict[field].strip())`).
+
+There is no answer-key, ambiguity or IWF check.
+
+**Exports.** `educhain/utils/output_formatter.py` writes CSV (pandas, with nested fields JSON-encoded) and PDF (reportlab). There is no LMS format.
+
+**Study summary.** `ContentEngine.generate_study_guide` asks for:
+- difficulty and study time;
+- prerequisites;
+- 3-5 measurable objectives;
+- an overview and key concepts;
+- practice exercises (`title/problem/solution/difficulty`);
+- case studies, study tips and a key-takeaways summary.
+
+That is a reasonable section list for our combined study summary, provided every item is grounded in our transcript and not invented ("real-world case studies" invites hallucination).
+
+**Borrow:**
+- per-objective bulk generation with target counts, retries and duplicate tracking;
+- `metadata` per item;
+- the `keywords` field for open questions;
+- the study-guide skeleton.
+
+**Avoid:**
+- a key stored as free text;
+- a correct-first example;
+- silent empty results;
+- difficulty as a label only.
+
+### 3.2 EduAid (GPL-3.0) [2]
+
+GPL-3.0 means we must not copy code into M.B.S Studio unless we accept copyleft. Ideas are fine.
+
+**Two generation stacks.**
+1. **Classic NLP** (`backend/Generator/mcq.py`, `main.py`):
+   - extract keyphrases with pke MultipartiteRank and noun chunks;
+   - keep phrases far apart by normalized Levenshtein (`threshold 0.7`);
+   - generate the question with a T5 answer-aware model (`context: … answer: …`);
+   - generate distractors with sense2vec `most_similar(sense, n=15)`, filtered by edit-distance variations.
+2. **Local LLM** (`backend/Generator/llm_generator.py`): Qwen3-0.6B (Q4_K_M) through llama.cpp. The input is truncated to 3,000 words. The prompt:
+
+```python
+f"Generate exactly {max_questions} multiple-choice questions from this passage. "
+f"Each question should have 4 options (A, B, C, D) with one correct answer. "
+f"Return ONLY a JSON array, no other text.\n\n"
+f"Passage: {input_text}\n\n"
+f'Format: [{{"question": "...", "options": ["A) ...", "B) ...", "C) ...", "D) ..."], "correct_answer": "A"}}]\n'
+```
+
+The format example itself shows `"correct_answer": "A"`. Parsing extracts the first `[...]` with a regex and falls back to line parsing.
+
+**Distractor strategy worth borrowing.** `QuestionGenerator._get_MC_answers` (`main.py`):
+- collects the named entities in the text;
+- prefers distractors with the **same NER label** as the key (a person for a person, a date for a date);
+- fills any remaining slots at random;
+- shuffles.
+
+This enforces option homogeneity, which is an IWF rule (logical and grammatical cues). For our case, the equivalent is "distractors must be the same *type* as the key". For example, if the key is a concept definition, the distractors should be other concept definitions from the same lecture (`concepts[].definition`).
+
+**Validation.**
+- An optional `QAEvaluator` ranks QA pairs and keeps the top k.
+- `/get_mcq_answer` runs an extractive QA model on the source and picks the option with the highest TF-IDF cosine similarity to the predicted answer. This is a round-trip answerability check, but with weak matching.
+
+**Difficulty ("hard" endpoints).** `backend/Generator/question_filters.py` `QuestionEnhancer.enhance`:
+- replaces question words ("what" becomes "which specific");
+- swaps in longer WordNet synonyms;
+- adds "precisely/specifically/exactly";
+- converts to passive voice at random.
+
+This is an explicit anti-pattern for us. It raises reading load and can break grammar without changing the cognitive demand.
+
+**Exports.** `/generate_gform` (`backend/server.py`) uses the Google Forms API `forms().create` plus `batchUpdate` with `createItem` → `choiceQuestion` `RADIO`, with choices shuffled locally. It does **not** set `isQuiz` or `grading.correctAnswers` (grep found no `grading`, `isQuiz` or `correctAnswer`). The result is a survey, not a self-grading quiz; see [29][30] for the missing calls.
+
+**Security note.** The repository tree contains a file named `backend/service_account_key.json`. I did not open it. It is a reminder never to ship credentials in exports or repos.
+
+### 3.3 SAQUET (no license; read-only) [3], and ECTEL23 [4]
+
+`SAQUET.ipynb` is the most directly reusable *design* for our automatic checker. The repo has no license, so we should **re-implement the rubric from the papers** [13][14] and not copy code.
+
+**Architecture.** Each criterion is a function `criterion(question) -> bool` (True = passes). Cheap rules decide most cases. An LLM is asked only when the rule is uncertain. The verifier, `llm_rating(sysrole, prompt, threshold=5)`:
+- asks for a single 1-10 integer at temperature 0.7;
+- collects up to three ratings, stopping early when the first two agree strongly (both ≥7 or both ≤4);
+- takes the mode, or the mean of the closest pair;
+- passes when the score is ≥ threshold. The threshold is 4 for "unfocused stem", because the authors found the LLM too strict there.
+
+**The 19 criteria as implemented** (rule, then LLM fallback):
+
+| Criterion | Rule in SAQUET | LLM verify? |
+|---|---|---|
+| Implausible distractors | all-MiniLM-L6-v2 cosine(key, distractor) < 0.15 → NER / Jaccard / Levenshtein checks | yes (1-10 plausibility) |
+| None of the above | substring "none of the above", "neither", etc. | no |
+| All of the above | substring "all of the above" | no |
+| Fill-in-the-blank stem | `"__"` in stem | no |
+| True/False options | options equal true/false/yes/no | no |
+| Absolute terms | word list `always, never, none, all, completely, absolutely, totally, definitely, incapable, inevitable` | yes |
+| Longest answer correct | key > 1/0.75 × longest distractor (about 33% longer) and key ≥ 4 words | no |
+| Negatively worded stem | `not, none, never, without, exclude, except, false, incorrect…` | no |
+| Word repeats (stem ↔ key) | lemma nouns + synonyms shared by stem and key only | yes |
+| Logical cues | NER label of key absent among distractors; only one numeric option | yes |
+| Lost sequence | numeric options not sorted ascending/descending | no |
+| More than one correct | LLM lists *all* correct answers in JSON; pass iff exactly 1 | LLM only |
+| Complex K-type | options are combinations of others | yes |
+| Ambiguous/unclear | CoLA + query-wellformedness models | yes |
+| Gratuitous information | lexical richness CTTR > 4.5 | yes |
+| Convergence cues | synonyms of key nouns unevenly spread in distractors | yes |
+| Grammatical cues | verb-tense mismatch key vs distractors | yes |
+| Vague terms | `frequently, occasionally, rarely, sometimes, usually, generally, nearly…` | no |
+| Unfocused stem | stem not a question / no `?` or `:` | yes (threshold 4) |
+
+Verifier prompt shape (from the `implausible_distractors_verify` system role, abridged):
+
+```text
+You are a seasoned academic professional ... identify whether any distractors
+... are overly implausible ... Your assessment should focus on how well each
+distractor aligns with common misconceptions, partial knowledge, or thematic
+similarity to the correct answer.
+... Respond with only the numeric score (1–10) and nothing else.
+```
+
+**Other metrics.** The notebook computes perplexity, Distinct-3 diversity, LanguageTool grammar errors and an LLM Bloom label. The authors warn that these correlate poorly with human judgements of MCQ quality [13], so we should not use perplexity or BLEU-type scores as quality gates.
+
+**Limits for us.** Everything is English: spaCy `en`, WordNet, CoLA and the word lists. Hebrew needs its own word lists, and morphology-aware matching for prefixes (ו/ה/ב/כ/ל/מ/ש). The LLM-only parts carry over directly to Gemini.
+
+### 3.4 llm-student-modeling-strategies (MIT) [5]
+
+This is research code for Zengaffinen et al., *Can LLMs Model Incorrect Student Reasoning? A Case Study on Distractor Generation* (Findings of EMNLP 2026) [15].
+
+**Prompt design.** `src/models/impl/enforce_process.py` `prompt_joint()` encodes the learning-science process. Abridged:
+
+```text
+Solve correctly first:
+1. First, solve the problem correctly and treat the most likely correct solution as fixed.
+2. Identify the key concepts involved in the correct solution.
+3. Specify the exact conditions that an answer must violate to be a valid distractor.
+Error modeling:
+4. Enumerate at most 7 common error primitives ... either (a) a buggy rule ... or (b) a buggy commitment ...
+Error simulation:
+6. For each error primitive, assume the student fully commits to that single error ...
+```
+
+It continues with "Plausibility Assessment" (step 8: derivable, truly incorrect under any reasonable interpretation, likelihood students stop here, well-formed) and "Selection" (step 9: the n most distinct plausible distractors). Output is a plain `DistractorN:` template parsed by regex. The baseline `naive.py` prompt is a single sentence. That contrast is the point of the paper.
+
+**Decomposition.** `src/models/misconception.py` (`MisconceptionModel.propose(context, tried_misconceptions, n)`) and `src/models/simulation.py` (`SimulateModel.simulate(context, misconception)`) split distractor generation into two steps: propose a misconception, then compute the wrong answer it implies. This maps one-to-one onto our profile: the `misconceptions[]` list supplies the misconceptions, and Gemini only has to simulate them.
+
+**Validation and metrics.**
+- `src/equality.py` uses an LLM judge to decide whether two answers are *semantically the same* without solving the problem. It has a subject-specific system prompt and memoization.
+- `src/evaluation.py` defines `number_correct`: how many generated distractors are actually equivalent to the key, which is a fatal flaw. It also defines `number_repetitions` (duplicate distractors) and proportional, exact and partial match against human distractors.
+
+For us, run the equivalence judge on every pair (key, distractor_i) and (distractor_i, distractor_j).
+
+**Findings** *(abstract)* [15]:
+- In math, models follow a solve, error, simulate, select process.
+- In science, they rely more on semantic similarity, which is less robust.
+- The main failures are not solving the item correctly, and discarding plausible candidates at selection.
+
+Lecture content resembles the "science" setting more than the math one, so supplying explicit misconceptions matters more for us.
+
+### 3.5 text2qti (BSD-3-Clause) [6]
+
+**Interchange format** (README). This is a compact plain-text quiz syntax that is easy to generate and diff:
+
+```text
+Quiz title: Addition
+Title: An addition question
+Points: 2
+1.  What is 2+3?
+... General question feedback.
+a)  6
+b)  1
+*c) 5
+```
+
+It also supports multiple-answer (`[*]`), numerical (`= 1.4142 +- 0.0001`), short-answer (`* Santa`), essay (`____`) and question groups ("pick N of M" via `<selection_number>`).
+
+**QTI 1.2 package** (`text2qti/qti.py`, `write()`):
+
+```python
+zf.writestr('imsmanifest.xml', self.imsmanifest_xml)
+zf.writestr(zipfile.ZipInfo('non_cc_assessments/'), b'')
+zf.writestr(f'{self.assessment_identifier}/assessment_meta.xml', self.assessment_meta)
+zf.writestr(f'{self.assessment_identifier}/{self.assessment_identifier}.xml', self.assessment)
+```
+
+Item templates are in `text2qti/xml_assessment.py`:
+- `<item>` → `<itemmetadata>` with `question_type` = `multiple_choice_question` (Canvas extension fields);
+- `<presentation>` → `<response_lid rcardinality="Single">` → `<render_choice>` → `<response_label ident=…>`;
+- `<resprocessing>` → `<respcondition>` → `<varequal respident="response1">KEY_IDENT</varequal>` → `<setvar varname="SCORE">100</setvar>`.
+
+**Caveats.** The format is Canvas-flavoured QTI 1.2, not QTI 2.x or 3.0. The README warns that Canvas tends to fail *silently* on invalid files [38]. There is no RTL handling (grep found no `dir=`). Shuffling is a quiz-level option (`Shuffle answers:`).
+
+---
+
+## 4. Evidence-based MCQ item-writing rules an automatic checker can enforce
+
+The rules below combine:
+- the Haladyna, Downing & Rodriguez (2002) taxonomy of 31 guidelines [22];
+- the NBME item-writing guide [25];
+- the distractor review by Gierl et al. (2017) [24];
+- Rodriguez's (2005) meta-analysis on the number of options [23];
+- the 19-criterion IWF rubric operationalized by SAQUET [3][13][14].
+
+Detection gives the checking method. Severity: **block** means regenerate, **fix** means auto-repair, **warn** means show to the user. Hebrew equivalents are my proposals and need review by a native-speaking educator.
+
+| # | Rule | Evidence | Detection | Severity |
+|---|---|---|---|---|
+| R1 | Exactly one defensible correct answer (single best answer) | [22][25]; SAQUET "more than one correct" [3] | Blind-solver LLM lists *all* defensible options given stem + options + cited sections; must equal the key and be unique | block |
+| R2 | Key is supported by the lecture | Our fact-check stage; [13] | Key claim entailed by cited `section_ids` (existing fact-checker); blind solver cites a section | block |
+| R3 | No distractor equivalent to the key or to another distractor | [5] `number_correct`, `number_repetitions` | Normalized string match + LLM equivalence judge (pairwise) | block |
+| R4 | No "all of the above" / "none of the above" | [22]; [3] | Regex EN: `all of the above`, `none of the above`, `neither`; HE: `כל התשובות`, `כל התשובות (ה)?נכונות`, `אף (אחת|תשובה)`, `אף אחת מהתשובות`, `כל האמור לעיל`, `אף אחד מהנ"ל`, `כל הנ"ל` | block |
+| R5 | No complex/K-type options ("A and B", "only 1 and 3") | [22]; [3] | Regex for option letters/numerals joined by and/or (HE: `ו־`, `וגם`, `או`, `רק`) + LLM verify | block |
+| R6 | Options homogeneous in type and grammar (no grammatical cues) | [22][25]; [3] grammatical/logical cues | Same answer "type" tag from generator; HE: gender/number agreement of stem ending with each option (e.g., stem ending in feminine adjective), definite article ה consistency; LLM verify | fix |
+| R7 | Similar option lengths; key not the longest | [22]; [3] longest-answer-correct | Flag if len(key) > 1.33 × longest distractor (SAQUET threshold) or key is longest in >40% of exam items | fix |
+| R8 | No absolute determiners in options (cue to falsity) | [22]; [3] | EN list from [3]; HE: `תמיד`, `אף פעם`, `לעולם`, `לעולם לא`, `בהכרח`, `אך ורק`, `בשום מקרה`, `כל`, `כולם`, `לחלוטין`, `ודאי` → LLM verify | warn |
+| R9 | No vague frequency terms | [3] | EN list from [3]; HE: `לפעמים`, `לעיתים`, `לרוב`, `בדרך כלל`, `לעיתים רחוקות`, `כמעט`, `במידה מסוימת`, `חלקית` | warn |
+| R10 | Stem worded positively; if negative, emphasize | [22][25]; [3] | EN `not/except/false/incorrect`; HE `לא`, `אינו/אינה/אינם`, `למעט`, `חוץ מ`, `שגוי`, `אינה נכונה` → if present require bold/caps marker or regenerate | fix |
+| R11 | Focused stem: answerable without seeing options ("cover-the-options") | [25]; [3] unfocused stem | Stem must end with `?` or `:`; LLM: answer from stem alone, compare to key | fix |
+| R12 | No word repeats/clang associations between stem and key only | [3] word repeats | Lemma overlap stem∩key not present in distractors (HE needs prefix stripping) | fix |
+| R13 | No convergence cues (key shares most elements with distractors) | [3] | Token overlap: key should not be the "centroid" of the options | warn |
+| R14 | Plausible distractors, ideally from known misconceptions | [24][15]; [3] | Each distractor has a `rationale` and `source` ∈ {misconception, objection, neighbour concept, error simulation}; embedding similarity to key not too low (SAQUET used < 0.15 as "implausible" with all-MiniLM; recalibrate for a multilingual embedder) | fix |
+| R15 | Numeric options in logical order | [3] lost sequence | Sort numeric options ascending | fix (auto) |
+| R16 | Balanced key positions across the exam | [16][33] | App-assigned; chi-square or max deviation check over the set; no more than 3 identical keys in a row | fix (auto) |
+| R17 | No gratuitous information / minimal reading load | [22]; [3] | Stem length cap per difficulty; LLM verify | warn |
+| R18 | Avoid True/False disguised as MCQ and fill-in-blank stems | [3] | Options ∈ {true, false, yes, no, נכון, לא נכון, כן, לא}; `__` in stem | block |
+| R19 | 3-4 options are enough; quality over quantity | [23] (three options optimal on average) | Allow 3 or 4 options; prefer dropping a weak distractor to padding | config |
+| R20 | One item tests one objective; no item cues another item's answer | [22][25] | Cross-item check: key text of item i not stated in stem of item j (string/embedding overlap) | warn |
+| R21 | Language quality (spelling, mixed-script, bidi) | Engineering | Hebrew spell check; LTR terms wrapped in bidi isolates; no stray Latin letters in Hebrew-only items | fix |
+
+**Recommendation for implementation order:**
+1. R1-R4, R16 and R18. These are cheap, high value and largely language-agnostic.
+2. R7, R10, R11 and R14, the main cue detectors.
+3. The remaining rules.
+
+Store per-item `flags[]` with rule ids so the UI can explain why an item was rejected or edited.
+
+---
+
+## 5. Prompting and pipeline recommendations (what to build)
+
+### 5.1 Pipeline (our proposal)
+
+1. **Collect**: the selected projects' lesson profiles plus transcript sections.
+2. **Merge**:
+   - deduplicate concepts across lectures (normalized name + LLM merge when definitions agree);
+   - keep `lecture_id:section_id` provenance;
+   - order concepts topologically by `depends_on`.
+3. **Study summary**: per concept give the definition, why it matters, a lecturer example, key facts, misconceptions and cross-lecture links. Every bullet cites `lecture_id:section_id`. Run the existing fact-check stage.
+4. **Blueprint**: weight items by `importance`, by learning-objective coverage and by personal weakness. Assign Bloom level by difficulty (Section 6). Mix MCQ and open items.
+5. **Generate**, one call per blueprint cell:
+   - stem, key, rationale, `section_ids`;
+   - `misconception_candidates` (from the profile);
+   - distractors simulated from them (the [15] process).
+6. **Check**: rules (Section 4), then the blind solver, equivalence judge and LLM IWF verifiers for flagged items only. Make at most 2 repair attempts, then drop the item.
+7. **Assemble**: shuffle options in code, balance key positions, order by difficulty or topic, and export.
+8. **Practice loop**: log answers, update concept mastery, and schedule re-asks with FSRS.
+
+### 5.2 Suggested Gemini output schema for one MCQ (generation step)
+
+```json
+{
+  "objective": "string (from learning_objectives)",
+  "concept": "string (concepts[].name)",
+  "bloom": "remember|understand|apply|analyze|evaluate",
+  "difficulty": "easy|medium|hard",
+  "stem": "string, ends with ? or :",
+  "correct_answer": "string",
+  "distractors": [
+    {"text": "string", "error_type": "misconception|objection|neighbour_concept|procedural",
+     "source_ref": "misconceptions[2] | arguments[0].objections[1] | concept:X", "why_wrong": "string"}
+  ],
+  "explanation": "string (why the key is right, citing sections)",
+  "section_ids": ["L3:s12", "L3:s13"],
+  "language": "he|en"
+}
+```
+
+There is deliberately **no `correct_index` and no letter**: position is the app's job. `why_wrong` per distractor becomes option-level feedback in every export (Moodle `<feedback>`, GIFT `#`, QTI `displayfeedback`).
+
+### 5.3 Hebrew-specific notes (Recommendation; no Hebrew MCQ-generation tooling found)
+
+I found **no open-source Hebrew MCQ generation or item-quality tooling**. The closest resources are:
+- HeQ, a Hebrew extractive QA benchmark [12][31]. Its authors note that standard F1/EM metrics fit Hebrew poorly because of morphology.
+- Hebrew LLM benchmarks such as AlephBench [32].
+
+Practical consequences:
+- **Morphology.** Prefixes (ו/ה/ב/כ/ל/מ/ש) attach to words, so "word repeat" (R12) and absolute-term checks (R8) need prefix stripping or a lemmatizer, not raw token matching.
+- **Grammatical cues** (R6) are *more* likely in Hebrew than in English. The stem's gender and number agreement can reveal the key. Instruct the generator to keep every option in the same gender, number and definiteness, and verify with the LLM.
+- **Mixed direction.** Lecture terms are often English inside Hebrew text. In HTML exports, wrap each option in `<div dir="rtl">` and English or technical runs in `<bdi>` or `dir="auto"`. In Anki, add `direction: rtl; text-align: right;` to the note-type CSS.
+- **Language parameter.** When the exam language differs from the lecture language, generate in the lecture language, translate, and run the blind solver on the *translated* item. Translation can introduce ambiguity or a second correct answer.
+
+---
+
+## 6. Difficulty: mapping easy/medium/hard to Bloom and generation instructions
+
+**What the projects do.**
+- **educhain:** a `difficulty` string label. The default template ignores the requested level, and the bulk template hard-codes "medium" and "5th grade" [1].
+- **EduAid:** "hard" means lexical obfuscation [2], an anti-pattern.
+- **SAQUET:** labels the Bloom level after the fact with an LLM [3].
+
+**What the papers say.**
+- Bloom-targeted generation works "when prompted with adequate information", but quality varies a lot by model, and automated evaluation is not on par with experts [18] *(abstract)*.
+- Teachers preferred building quizzes from Bloom-aligned generated questions [20] *(search snippet)*.
+- MCQG-SRefine's critique-and-correct loop raised expert ratings of quality *and difficulty* compared with plain GPT-4 [17] *(abstract)*.
+- LLM difficulty prediction remains hard even with supervised models (BEA 2024 shared task on USMLE items [35], *search snippet*).
+- One project notes that LLM-generated items skew toward low Bloom levels and struggle with misconception-based distractors [36] *(search snippet)*.
+
+**Recommendation.** Difficulty is a property of the *task* and the *distractors*, not of the wording:
+
+| Level | Bloom target | Content scope | Stem pattern | Distractor closeness | Generation instruction (gist) |
+|---|---|---|---|---|---|
+| Easy | Remember, Understand | One concept or key fact, one section | "Which statement defines X?", "According to the lecture, what is X?" | Distractors from *other* concepts' definitions in the same lecture (homogeneous but clearly different) | "Test recognition of one key fact from sections S. Distractors must be real terms from this lecture that do not fit." |
+| Medium | Understand, Apply | One concept applied to a new case, or two related concepts (`depends_on`) | New scenario or example (not the lecturer's own), "Which example illustrates X?", "What would happen if…" | Distractors from listed `misconceptions` and neighbouring concepts, each simulating one error | "Write a NEW example not in the transcript. Each distractor simulates exactly one listed misconception." |
+| Hard | Analyze, Evaluate | Two or more concepts, ideally across lectures; `arguments` with `objections` | Compare/contrast, "Which is the strongest objection to claim C?", "Which conclusion best follows?", best-answer items | Distractors are partially correct, true-but-irrelevant, or a plausible objection the lecture rebutted | "Require integrating sections S1 (lecture A) and S2 (lecture B). Distractors must be statements a student with partial understanding would choose." |
+| Open (any) | Apply → Create | As above | Explain, justify, design, critique | n/a | Rubric of 3-5 key points with `section_ids`, model answer, common wrong answers from misconceptions |
+
+**Calibration** (Recommendation, standard classical test theory):
+1. **Generate-time check.** A separate LLM call labels the Bloom level from the stem and options (as in [3]). Regenerate on mismatch.
+2. **Pre-exam estimate.** Simulate an "unprepared" solver that has the lecture title only, not the sections, and a "prepared" solver that has the sections. Items the unprepared solver gets right are probably too easy, or carry cues. Items the prepared solver gets wrong are ambiguous or wrongly keyed.
+3. **Post-exam statistics** from the user's own attempts:
+   - item p-value: proportion correct. Rough bands: easy > 0.8, medium 0.5-0.8, hard < 0.5;
+   - per-distractor selection rates: a distractor nobody picks is non-functional and should be replaced (see [24]);
+   - for multiple users, discrimination (point-biserial).
+
+   Feed these back into the difficulty label.
+4. **Personalization.** Keep a mastery estimate per concept, for example Elo-like or the FSRS stability of concept cards [9]. Pick the next blueprint so that the expected success rate is about 70-85%.
+
+---
+
+## 7. Export formats: exact structures
+
+### 7.1 Anki: CSV/TXT (no dependency) [28]
+
+Rules:
+- the file is UTF-8 text;
+- `#key:value` header lines sit at the top;
+- `#` lines are comments;
+- fields containing the separator or a newline are wrapped in double quotes, with an inner `"` written as `""`;
+- the **first field is the duplicate key**;
+- `#guid column:` makes re-imports update existing notes in place.
+
+```text
+#separator:Tab
+#html:true
+#notetype:Basic
+#deck:MBS::Exam::Microeconomics
+#tags column:3
+#guid column:4
+<div dir="rtl">מהי גמישות הביקוש?</div>	<div dir="rtl">היחס בין שינוי באחוזים בכמות המבוקשת לשינוי באחוזים במחיר.<br><small>הרצאה 3, סעיף 12</small></div>	mbs concept::elasticity	mbs-l3-c7-q1
+```
+
+For MCQ-style cards, put the options as an HTML list on the front and the key plus `why_wrong` notes on the back. Anki has no native MCQ type, so MCQs become recall cards.
+
+### 7.2 Anki `.apkg` via genanki (MIT) [7]
+
+```python
+model = genanki.Model(1607392319, 'MBS Exam', fields=[{'name':'Q'},{'name':'A'},{'name':'Ref'}],
+  templates=[{'name':'Card 1','qfmt':'{{Q}}','afmt':'{{FrontSide}}<hr id="answer">{{A}}<br>{{Ref}}'}],
+  css='.card{direction:rtl;text-align:right;}')
+deck = genanki.Deck(2059400110, 'MBS::Exam')
+deck.add_note(genanki.Note(model=model, fields=[q_html, a_html, ref], guid=genanki.guid_for(item_id)))
+genanki.Package(deck).write_to_file('exam.apkg')
+```
+
+Hard-code the model and deck IDs once. Use stable GUIDs from our item id so that regenerating an item updates it and does not duplicate it [7].
+
+### 7.3 Moodle XML [26]
+
+Rules:
+- the first line must be the XML declaration;
+- the root is `<quiz>`;
+- the file is UTF-8;
+- the format is set on the parent element (`<questiontext format="html">`);
+- HTML goes in CDATA;
+- `fraction="100"` marks the key;
+- `<single>true</single>` gives radio buttons;
+- `answernumbering` takes `none|abc|ABCD|123`;
+- a `category` pseudo-question sets the bank category.
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<quiz>
+  <question type="category"><category><text>$course$/MBS Exam/Lecture 3</text></category></question>
+  <question type="multichoice">
+    <name><text>L3-elasticity-01</text></name>
+    <questiontext format="html"><text><![CDATA[<div dir="rtl">מהי גמישות הביקוש?</div>]]></text></questiontext>
+    <generalfeedback format="html"><text><![CDATA[<div dir="rtl">ראו הרצאה 3, סעיף 12.</div>]]></text></generalfeedback>
+    <answer fraction="100" format="html"><text><![CDATA[<div dir="rtl">היחס בין שינוי באחוזים בכמות לשינוי באחוזים במחיר</div>]]></text>
+      <feedback format="html"><text><![CDATA[<div dir="rtl">נכון.</div>]]></text></feedback></answer>
+    <answer fraction="0" format="html"><text><![CDATA[<div dir="rtl">השינוי בכמות חלקי השינוי במחיר, ביחידות</div>]]></text>
+      <feedback format="html"><text><![CDATA[<div dir="rtl">זהו השיפוע, לא הגמישות.</div>]]></text></feedback></answer>
+    <single>true</single>
+    <shuffleanswers>1</shuffleanswers>
+    <answernumbering>abc</answernumbering>
+  </question>
+</quiz>
+```
+
+Moodle reports almost no parse errors [26], so validate the XML before writing it (for example, round-trip it through `xml.etree`).
+
+### 7.4 GIFT [27]
+
+Rules:
+- the file is UTF-8;
+- leave a blank line between questions;
+- `::title::` sets the title;
+- `[html]` or `[markdown]` before the text sets the format;
+- `=` marks the key, `~` a distractor, `#` feedback;
+- `~%50%` gives partial credit;
+- `{T}`/`{F}` gives true/false, and `{}` an essay;
+- `$CATEGORY: path` goes on its own line;
+- **escape `~ = # { } :` with a backslash** in all user text. Hebrew text containing `:` (common in definitions) must be escaped. So must the `=` inside HTML attributes (`dir\="rtl"`), or the parser will read it as an answer marker.
+
+```text
+$CATEGORY: MBS Exam/Lecture 3
+
+::L3-elasticity-01::[html]<div dir\="rtl">מהי גמישות הביקוש?</div>{
+  =<div dir\="rtl">היחס בין שינוי באחוזים בכמות לשינוי באחוזים במחיר</div>#נכון.
+  ~<div dir\="rtl">השינוי בכמות חלקי השינוי במחיר, ביחידות</div>#זהו השיפוע, לא הגמישות.
+  ~<div dir\="rtl">השינוי בהכנסה חלקי השינוי במחיר</div>#זו אינה הגדרת גמישות הביקוש.
+}
+```
+
+### 7.5 QTI 1.2 (Canvas and other LMSs) [6]
+
+Zip layout (from text2qti `qti.py`):
+
+```text
+quiz.zip
+├── imsmanifest.xml                       (IMS CP manifest; resource type imsqti_xmlv1p2)
+├── non_cc_assessments/                   (empty dir)
+└── <assessment_id>/
+    ├── <assessment_id>.xml               (questestinterop → assessment → section → item*)
+    └── assessment_meta.xml               (Canvas quiz settings: shuffle, points, etc.)
+```
+
+Minimal item (structure from `xml_assessment.py`, abridged):
+
+```xml
+<item ident="q1" title="L3-elasticity-01">
+  <itemmetadata><qtimetadata>
+    <qtimetadatafield><fieldlabel>question_type</fieldlabel><fieldentry>multiple_choice_question</fieldentry></qtimetadatafield>
+    <qtimetadatafield><fieldlabel>points_possible</fieldlabel><fieldentry>1</fieldentry></qtimetadatafield>
+  </qtimetadata></itemmetadata>
+  <presentation>
+    <material><mattext texttype="text/html">&lt;div dir="rtl"&gt;מהי גמישות הביקוש?&lt;/div&gt;</mattext></material>
+    <response_lid ident="response1" rcardinality="Single"><render_choice>
+      <response_label ident="c1"><material><mattext texttype="text/html">…</mattext></material></response_label>
+      <response_label ident="c2"><material><mattext texttype="text/html">…</mattext></material></response_label>
+    </render_choice></response_lid>
+  </presentation>
+  <resprocessing>
+    <outcomes><decvar maxvalue="100" minvalue="0" varname="SCORE" vartype="Decimal"/></outcomes>
+    <respcondition continue="No"><conditionvar><varequal respident="response1">c1</varequal></conditionvar>
+      <setvar action="Set" varname="SCORE">100</setvar></respcondition>
+  </resprocessing>
+</item>
+```
+
+QTI 2.1 and 3.0 (1EdTech) are different, richer XML vocabularies. I did not verify their details for this report (**unverified**), so start with QTI 1.2, which Canvas and others import [38].
+
+### 7.6 Google Forms (later, optional) [29][30]
+
+The flow:
+1. `forms.create` accepts only a title [29].
+2. `batchUpdate` with `updateSettings` sets `{"quizSettings":{"isQuiz":true}}`, with `updateMask: "quizSettings.isQuiz"` [29].
+3. `createItem` adds each question as `choiceQuestion {type: RADIO, options:[{value}], shuffle}` with `grading {pointValue, correctAnswers:{answers:[{value}]}, whenRight, whenWrong}` [30].
+
+This needs OAuth to the user's Google account, which conflicts with local-first. EduAid skips steps 2-3, so its forms are not graded [2].
+
+### 7.7 Internal format
+
+**Recommendation:** keep our own JSON (Section 5.2) as the source of truth, and treat every export as a pure function of it. Optionally also emit text2qti-style plain text: it is human-editable and diff-friendly for users who want to tweak items before export.
+
+---
+
+## 8. Risks and pitfalls seen in these projects
+
+| Risk | Where seen | Mitigation for M.B.S Studio |
+|---|---|---|
+| **Hallucinated or wrong answer key** | educhain stores `answer` as free text, never checked against options or source [1]; EduAid's small 0.6B local model + regex JSON extraction [2]; generated items sometimes have more than one correct answer [19] *(search snippet, third-party summary)* | Key must equal one option by construction (separate fields); blind solver (R1); fact-check against `section_ids` (R2) |
+| **Answer-position bias** | Prompt examples with the key at "A"/Option A ([1], [2]); LLM position planning [16] | App-side shuffle + exam-level balancing (R16) |
+| **Ambiguous / unfocused stems, multiple correct** | Not checked in educhain/EduAid; SAQUET finds LLM checks need thresholds tuned per criterion (unfocused stem threshold lowered to 4) [3] | R1, R11 + per-rule thresholds tuned on a small Hebrew gold set |
+| **Distractor = key or near-synonym** | sense2vec "most similar" neighbours [2]; [5] measures `number_correct` | LLM equivalence judge pairwise (R3) |
+| **Implausible / "silly" distractors** | Random NER fill-ins when same-label pool is small [2]; LLM science distractors via surface similarity [15] | Misconception-sourced distractors with `why_wrong` (R14) |
+| **Construct-irrelevant difficulty** | EduAid synonym/passive "hardening" [2] | Difficulty via Bloom and content scope (Section 6) |
+| **Difficulty knob silently ignored** | educhain default template [1] | Unit test: difficulty and Bloom level must appear in the rendered prompt; post-hoc Bloom classification |
+| **Silent failures** | educhain returns an empty model on parse error [1]; Canvas fails silently on bad QTI [38]; Moodle reports few XML errors [26] | Gemini JSON schema mode + explicit error surfacing; validate exports (XML parse, GIFT escape tests) |
+| **Truncated context** | EduAid truncates to 3,000 words [2] | Generate per blueprint cell with only the cited sections + profile; never truncate silently |
+| **Automated metrics ≠ human quality** | SAQUET notes BLEU/perplexity-type metrics correlate poorly with human judgements [13]; automated Bloom evaluation is not on par with experts [18] | Use IWF rules + blind solving as gates; human "report a bad question" button feeds a gold set |
+| **Language quality (Hebrew)** | All checkers are English-only ([3] spaCy en, WordNet, CoLA) | Hebrew word lists (Section 4), prefix-aware matching, gender/number agreement checks, bidi-safe HTML |
+| **Low Bloom skew / low diversity** | Reported in [36] and [39] *(search snippets)* | Blueprint forces a level mix; dedupe by embedding similarity, not exact string (educhain uses exact string [1]) |
+| **Licensing** | EduAid GPL-3.0; SAQUET/ECTEL23/MedQG no license | Borrow ideas, not code; copying is fine only from MIT/BSD (educhain, eth-lre, text2qti, genanki, py-fsrs) with attribution |
+| **Credential hygiene** | `service_account_key.json` present in EduAid tree [2] | Keep any Google/OAuth tokens out of project folders and exports |
+
+---
+
+## 9. Concrete adoption list (summary of recommendations)
+
+1. **Blueprint first.** Build an exam blueprint from merged lesson profiles: concept/objective × Bloom level × `section_ids`, weighted by importance and user weakness.
+2. **One cell per call.** Each Gemini call writes one item with separate `correct_answer` and `distractors[]`, plus `why_wrong`, `error_type`, `source_ref` and `section_ids`.
+3. **Error-modelled distractors.** Use the [15] process (solve, then errors, then simulate, then select), seeded by profile `misconceptions` and `arguments[].objections`.
+4. **Code places the key.** Option order and key position are decided in code, with balanced positions across the exam.
+5. **Two-layer gate.** Run the R1-R21 rules (Hebrew-aware), then LLM verifiers only when a rule fires, using 1-10 scores and up to 3 samples (SAQUET pattern).
+6. **Blind solver and equivalence judge.** These guard the key, catch multiple correct answers and remove duplicate distractors.
+7. **Difficulty through task design.** Easy/medium/hard map to Bloom level, scope and distractor closeness. Verify with a post-hoc Bloom classifier and calibrate from user answers.
+8. **Exports.** Anki CSV, Moodle XML, GIFT and QTI 1.2 as pure string templates. Use genanki for `.apkg`. Use RTL-wrapped HTML everywhere.
+9. **Practice loop.** FSRS scheduling plus concept mastery to personalize later exams.
+10. **Grounded study summary.** The combined study summary is grounded per bullet in `lecture:section`, and fact-checked with the same stage the podcast already uses.
+
+---
+
+## 10. Sources
+
+All accessed 2026-11-10 unless noted. "API" means GitHub REST API metadata (stars, forks, push date, license). "Cloned" means I read the source in a shallow clone. *(abstract)* means I read the abstract page only. *(search snippet)* means I saw only search-result text, so it is **unverified** against the full text.
+
+1. satvik314/educhain: https://github.com/satvik314/educhain (API; cloned, commit 38adb1e)
+2. AOSSIE-Org/EduAid: https://github.com/AOSSIE-Org/EduAid (API; cloned, commit 2038116)
+3. StevenJamesMoore/SAQUET: https://github.com/StevenJamesMoore/SAQUET (API; cloned)
+4. StevenJamesMoore/ECTEL23: https://github.com/StevenJamesMoore/ECTEL23 (API search; cloned)
+5. eth-lre/llm-student-modeling-strategies: https://github.com/eth-lre/llm-student-modeling-strategies (API; cloned, commit 9b53364)
+6. gpoore/text2qti: https://github.com/gpoore/text2qti (API; cloned, commit 80dac05)
+7. kerrickstaley/genanki: https://github.com/kerrickstaley/genanki (API; README fetched)
+8. raine/anki-llm: https://github.com/raine/anki-llm (API only; features from search snippet, **unverified**)
+9. open-spaced-repetition/py-fsrs: https://github.com/open-spaced-repetition/py-fsrs (API; README fetched)
+10. bio-nlp/MedQG: https://github.com/bio-nlp/MedQG (API only; CC-BY-NC 4.0 claim from search snippet, **unverified**)
+11. nicyscaria/AEQG-MCQ-Distractors-Physics: https://github.com/nicyscaria/AEQG-MCQ-Distractors-Physics (API only)
+12. NNLP-IL/Hebrew-Question-Answering-Dataset: https://github.com/NNLP-IL/Hebrew-Question-Answering-Dataset (API only)
+13. Moore, Costello, Nguyen, Stamper. *An Automatic Question Usability Evaluation Toolkit* (AIED 2024): https://arxiv.org/abs/2405.20529 *(abstract)*
+14. Moore et al. *Assessing the Quality of Multiple-Choice Questions Using GPT-4 and Rule-Based Methods* (EC-TEL 2023): https://arxiv.org/abs/2307.08161 (linked from [4] README; 91% vs 79% figure from *search snippet*, **unverified**)
+15. Zengaffinen et al. *Can LLMs Model Incorrect Student Reasoning? A Case Study on Distractor Generation* (Findings of EMNLP 2026): https://arxiv.org/abs/2603.15547 *(abstract)*
+16. Tang, Duan, Cai. *Do Large Language Models Plan Answer Positions? Position Bias in Multiple-Choice Question Generation* (2026): https://arxiv.org/abs/2605.01846 *(abstract; which positions are favoured and whether prompting fixes it are not stated there, **unverified**)*
+17. Yao, Parashar et al. *MCQG-SRefine* (NAACL 2025): https://arxiv.org/abs/2410.13191 *(abstract)*
+18. Scaria, Chenna, Subramani. *Automated Educational Question Generation at Different Bloom's Skill Levels using LLMs* (AIED 2024): https://arxiv.org/abs/2408.04394 *(abstract)*
+19. Doughty et al. *A Comparative Study of AI-Generated (GPT-4) and Human-crafted MCQs in Programming Education* (ACE 2024): https://arxiv.org/abs/2312.03173 *(abstract; the "more than one correct" weakness is from a third-party summary in search results, **unverified**)*
+20. Elkins, Kochmar, Cheung, Serban. *How Teachers Can Use LLMs and Bloom's Taxonomy to Create Educational Quizzes* (AAAI 2024): https://ojs.aaai.org/index.php/AAAI/article/view/30353 *(search snippet)*
+21. Alhazmi et al. *Distractor Generation in Multiple-Choice Tasks: A Survey of Methods, Datasets, and Evaluation* (EMNLP 2024): https://aclanthology.org/2024.emnlp-main.799 *(search snippet)*
+22. Haladyna, Downing, Rodriguez (2002). *A Review of Multiple-Choice Item-Writing Guidelines for Classroom Assessment*, Applied Measurement in Education 15(3), DOI 10.1207/s15324818ame1503_5: https://experts.umn.edu/en/publications/a-review-of-multiple-choice-item-writing-guidelines-for-classroom/ *(search snippet; guideline wording from secondary sources)*
+23. Rodriguez (2005). *Three Options Are Optimal for Multiple-Choice Items: A Meta-Analysis of 80 Years of Research*, EM:IP 24(2): https://u.osu.edu/cvmofficeofteachingandlearning/2018/02/02/how-many-options-should-a-multiple-choice-question-have-maybe-just-3/ *(search snippet / secondary)*
+24. Gierl, Bulut, Guo, Zhang (2017). *Developing, Analyzing, and Using Distractors for Multiple-Choice Tests in Education: A Comprehensive Review*, RER 87(6), DOI 10.3102/0034654317726529 *(search snippet)*
+25. NBME Item-Writing Guide (6th ed.): https://www.nbme.org/educators/item-writing-guide *(search snippet; PDF is gated, specific rule wording **unverified**)*
+26. Moodle Docs, *Moodle XML format* (5.3 docs): https://docs.moodle.org/en/Moodle_XML_format (fetched)
+27. Moodle Docs, *GIFT format* (5.3 docs): https://docs.moodle.org/en/GIFT_format (fetched)
+28. Anki Manual, *Importing text files*: https://docs.ankiweb.net/importing/text-files.html (fetched)
+29. Google Forms API, *Create a quiz*: https://developers.google.com/workspace/forms/api/guides/create-form-quiz (fetched)
+30. Google Forms API REST reference, `forms`: https://developers.google.com/workspace/forms/api/reference/rest/v1/forms (fetched)
+31. Cohen, Merhav, Goldberg, Tsarfaty. *HeQ: a Large and Diverse Hebrew Reading Comprehension Benchmark*: https://arxiv.org/abs/2508.01812 *(search snippet)*
+32. AlephBench (HebArabNlpProject), Hugging Face: https://huggingface.co/datasets/HebArabNlpProject/AlephBench *(search snippet)*
+33. Jeong, Kim, Whangbo. *SCOPE: Stochastic and Counterbiased Option Placement for Evaluating LLMs* (2025): https://arxiv.org/abs/2507.18182 *(abstract)*
+34. Moore & Diana. Narrative review of automated item-writing-flaw detection (AIME-Con 2026 WIP): https://aclanthology.org/2026.aimecon-wip.58.pdf *(search snippet)*
+35. BEA 2024 shared task on item difficulty / response time prediction (USMLE), example system paper: https://aclanthology.org/2024.bea-1.44 *(search snippet)*
+36. University of Warwick EduPort project notes on LLM math MCQ generation: https://warwick.ac.uk/fac/cross_fac/eduport/edufund/projects/yang/projects/math-multiple-choice-question-generation-via-human-large-language-model-collaboration/ *(search snippet)*
+37. *Automated Benchmark Generation from Domain Guidelines Informed by Bloom's Taxonomy*: https://arxiv.org/abs/2601.20253 *(search snippet)*
+38. text2qti on PyPI / README (Canvas silent-failure note): https://pypi.org/project/text2qti/ (search snippet; README also read in clone [6])
+39. *Understanding the Role of Temperature in Diverse Question Generation by GPT-4*: https://arxiv.org/abs/2404.09366 *(search snippet)*
