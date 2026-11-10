@@ -296,6 +296,69 @@ def create_app(root: Path, runner_factory=None, media_runner_factory=None) -> Fa
             raise HTTPException(400, "שמור קודם מפתח ElevenLabs")
         return key
 
+    # -------------------------------------------------------------- cost estimate (before making an episode)
+
+    _account_cache: Dict[str, Any] = {}
+
+    def _voice_account() -> Optional[Dict[str, Any]]:
+        """The ElevenLabs plan and characters left, kept for a minute (the estimate refreshes as options change)."""
+        from ..audio.dialogue_tts import elevenlabs_account
+
+        key = state.settings_store.read_env().get("ELEVENLABS_API_KEY", "")
+        if not key:
+            return None
+        cached = _account_cache.get(key)
+        if cached and time.time() - cached[0] < 60:
+            return cached[1]
+        try:
+            account = elevenlabs_account(key)
+        except Exception:  # offline or a bad key: the estimate still works without the account part
+            return None
+        _account_cache[key] = (time.time(), account)
+        return account
+
+    def _estimate(words: int, minutes: float, voice: str, language: str, images: int = 0) -> Dict[str, Any]:
+        from ..utils.pricing import estimate_podcast
+
+        env = state.settings_store.read_env()
+        writer = env.get("LLM_PROVIDER") or "gemini"
+        default_voice = env.get("DEFAULT_TTS_PROVIDER") or "elevenlabs"
+        voice = voice if voice in ("elevenlabs", "gemini", "azure") else (default_voice if default_voice != "auto" else "elevenlabs")
+        result = estimate_podcast(words, minutes, language=language, writer=writer,
+                                  writer_model=env.get("GEMINI_TEXT_MODEL") or "gemini-3.8-flash", voice=voice, images=images)
+        if voice == "elevenlabs":
+            account = _voice_account()
+            result["voice"]["account"] = account
+            if account:
+                left = account["characters_left"]
+                result["voice"]["enough"] = left >= result["voice"]["characters"]
+                result["voice"]["max_minutes"] = round(left / max(1, result["voice"]["characters"]) * minutes, 1)
+        return result
+
+    @app.get("/api/estimate")
+    def estimate(words: int = 0, minutes: float = 0, voice: str = "", language: str = "he", images: int = 0) -> Dict[str, Any]:
+        if words <= 0 or not 1 <= minutes <= 60:
+            raise HTTPException(400, "חסרים אורך התמלול ואורך הפרק")
+        return _estimate(words, minutes, voice, language, max(0, min(images, 40)))
+
+    @app.get("/api/projects/{project_id}/estimate")
+    def project_estimate(project_id: str, minutes: float = 0) -> Dict[str, Any]:
+        """For the plan screen: the plan's length (or one being edited), this lecture, this project's voices."""
+        from .chain import transcript_stats
+
+        project = _get(project_id)
+        transcript = state.store.transcript_path(project)
+        if transcript is None:
+            raise HTTPException(404, "אין עדיין תמלול")
+        stats = transcript_stats(transcript.read_text(encoding="utf-8-sig"))
+        plan = state.store.read_json(state.store.engine_dir(project) / "03_plan.json") or {}
+        target = minutes or float(plan.get("target_minutes") or project.options.get("minutes") or 0)
+        if not target:
+            from ..engine.planner import target_minutes
+            target = target_minutes(stats["minutes"])
+        return {**_estimate(stats["words"], target, project.options.get("voice", ""), project.options.get("language", "he")),
+                "lecture_minutes": stats["minutes"], "words": stats["words"]}
+
     @app.get("/api/voices/elevenlabs/library")
     def elevenlabs_library(language: str = "he") -> Dict[str, Any]:
         """Native Hebrew voices from ElevenLabs' Voice Library (the account itself starts with English ones)."""

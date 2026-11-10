@@ -123,3 +123,75 @@ def azure_vs_elevenlabs_diff(chars: float) -> float:
     azure_cost, _ = tts_cost(chars, "azure")
     return eleven_cost - azure_cost
 
+
+
+# --------------------------------------------------------------------------- whole-episode estimate
+
+# Gemini's tokenizer spends about 2.4 tokens on a Hebrew word and 1.4 on an English one (estimates)
+TOKENS_PER_WORD = {"he": 2.4, "en": 1.4}
+SPEECH_WPM = {"he": 135, "en": 150}       # the script engine's own pace
+TTS_CHARS_PER_WORD = 6.0                   # letters, the space and punctuation: what voice services bill
+ESTIMATE_RANGE = (0.6, 1.8)                # thinking length and revisions vary from lesson to lesson
+
+
+def estimate_podcast(
+    transcript_words: int,
+    target_minutes: float,
+    *,
+    language: str = "he",
+    writer_model: str = "gemini-3.8-flash",
+    writer: str = "gemini",
+    voice: str = "elevenlabs",
+    images: int = 0,
+    today: Optional[date] = None,
+) -> dict:
+    """What one episode is likely to cost, before it is made: the script (all engine stages) and the voices.
+
+    The script stages, roughly: cleanup reads the whole transcript and returns fixes; the analysis reads it
+    again; the plan reads the analysis; each segment is written from its part of the lecture and the plan,
+    then fact-checked against the lecture; a third of the segments are revised; a polish pass reads the
+    whole script. Gemini 3 also "thinks" before answering, billed as output. The result is a range.
+    """
+    language = "en" if language == "en" else "he"
+    tpw = TOKENS_PER_WORD[language]
+    script_words = max(1.0, float(target_minutes)) * SPEECH_WPM[language]
+    lecture, script = transcript_words * tpw, script_words * tpw
+    segments = max(3, round(float(target_minutes) / 3.5)) + 2
+    prompt = (lecture * 1.15            # cleanup (with instructions)
+              + lecture + 2000          # analysis
+              + 12000                   # plan
+              + lecture + segments * 8000  # writing: each segment's sources and the plan
+              + script + lecture        # fact-checking against the lecture
+              + script                  # polish
+              + (script + lecture) / 3)  # revisions
+    completion = (lecture * 0.25 * 1.3  # cleanup: fixes and section marks, a little thinking
+                  + 8000 + 6000         # analysis and plan, with thinking
+                  + script * 2.2        # writing, with thinking
+                  + script * 0.15       # fact-check verdicts
+                  + script * 0.3        # polish edits
+                  + script / 3 * 2.2)   # revisions
+    if writer == "local":
+        script_cost = 0.0
+    else:
+        script_cost = llm_token_cost(writer_model if writer == "gemini" else "gpt", int(prompt), int(completion), today)
+    chars = int(script_words * TTS_CHARS_PER_WORD * 1.03)
+    seconds = float(target_minutes) * 60
+    if voice == "gemini":
+        voice_cost = gemini_tts_cost(seconds, today)
+    elif voice == "azure":
+        voice_cost = tts_cost(chars, "azure")[0]
+    else:
+        voice_cost = tts_cost(chars, "elevenlabs")[0]
+    image_cost = gemini_image_cost(images) if images else 0.0
+    low, high = ESTIMATE_RANGE
+    return {
+        "target_minutes": float(target_minutes),
+        "script_words": int(script_words),
+        "tokens": {"prompt": int(prompt), "completion": int(completion)},
+        "script": {"low": round(script_cost * low, 2), "high": round(script_cost * high, 2), "writer": writer},
+        "voice": {"provider": voice, "characters": chars, "cost": round(voice_cost, 2)},
+        "images": {"count": images, "cost": round(image_cost, 2)},
+        "total": {"low": round(script_cost * low + voice_cost + image_cost, 2),
+                  "high": round(script_cost * high + voice_cost + image_cost, 2)},
+        "gemini_price_doubles": GEMINI_PRICE_DOUBLING.isoformat(),
+    }

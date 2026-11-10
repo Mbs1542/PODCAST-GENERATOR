@@ -229,6 +229,45 @@ def list_elevenlabs_library(api_key: str, language: str = "he", http: Any = None
     return {"voices": voices, "tier": tier, "slots_used": used, "slots_limit": limit, "api_blocked": free}
 
 
+def elevenlabs_account(api_key: str, http: Any = None) -> Dict[str, Any]:
+    """The plan and the characters left this month (what an episode's voices draw from)."""
+    response = (http or requests).get(ELEVENLABS_SUBSCRIPTION_URL, headers={"xi-api-key": api_key}, timeout=20)
+    if response.status_code != 200:
+        raise DialogueTTSError(_elevenlabs_error(response))
+    info = response.json()
+    used, limit = int(info.get("character_count") or 0), int(info.get("character_limit") or 0)
+    return {"tier": info.get("tier", ""), "characters_used": used, "characters_limit": limit,
+            "characters_left": max(0, limit - used), "resets_at": info.get("next_character_count_reset_unix")}
+
+
+def check_elevenlabs_ready(api_key: str, voices: Dict[str, str], characters_needed: Optional[int],
+                           http: Any = None) -> List[str]:
+    """Problems that would stop the voices part-way, found before any character is spent.
+
+    Two things fail late and waste work: running out of characters in the middle of an episode, and
+    Voice Library voices on the free plan (refused with 402 on the first chunk).
+    """
+    http = http or requests
+    account = elevenlabs_account(api_key, http)
+    problems = []
+    if characters_needed and characters_needed > account["characters_left"]:
+        reset = ""
+        if account.get("resets_at"):
+            import datetime as _dt
+            reset = f" (המכסה מתחדשת ב-{_dt.datetime.fromtimestamp(int(account['resets_at'])):%d/%m})"
+        problems.append(f"הפרק צריך כ-{characters_needed:,} תווים, ונשארו {account['characters_left']:,} במנוי ElevenLabs{reset}. "
+                        "אפשר לקצר את הפרק בתוכנית, לשדרג את המנוי, או לבחור בהגדרות את הקולות של Gemini.")
+    if account["tier"] == "free":
+        for speaker, voice_id in voices.items():
+            response = http.get(f"{ELEVENLABS_VOICES_URL}/{voice_id}", headers={"xi-api-key": api_key}, timeout=20)
+            if response.status_code == 200 and response.json().get("category") == "professional":
+                name = response.json().get("name", voice_id).split(" - ")[0]
+                host = {"Roee": "רועי", "Noa": "נועה"}.get(speaker, speaker)
+                problems.append(f"הקול של {host} ({name}) הוא מהספרייה של ElevenLabs, ובמנוי החינמי אי אפשר להשתמש בו "
+                                "מהאפליקציה. בחר קול מובנה, עבור ל-Gemini או שדרג את המנוי.")
+    return problems
+
+
 def add_elevenlabs_library_voice(api_key: str, public_owner_id: str, voice_id: str, name: str, http: Any = None) -> str:
     """Add a Voice Library voice to the account; returns the voice id to use with it."""
     if not re.fullmatch(r"[A-Za-z0-9]{6,80}", public_owner_id or "") or not re.fullmatch(r"[A-Za-z0-9]{6,80}", voice_id or ""):

@@ -596,6 +596,7 @@ async function renderPlan(p, el) {
         <h2>מסקנות לסיום</h2>
         ${[0, 1, 2].map((i) => `<input type="text" data-takeaway="${i}" value="${esc((draft.takeaways || [])[i] || "")}" placeholder="מסקנה ${i + 1}">`).join("")}
       </div>
+      <div class="card stack" id="plan-cost"><div class="muted">מחשב הערכת עלות...</div></div>
       <div class="sticky-actions">
         <button class="btn primary lg" id="save-write" ${locked ? "disabled" : ""}>${hasScript ? "שמור וכתוב את התסריט מחדש" : "שמור וכתוב את התסריט"}</button>
         <button class="btn lg" id="save" ${locked ? "disabled" : ""}>שמור בלבד</button>
@@ -654,10 +655,22 @@ async function renderPlan(p, el) {
   };
   renderSegments();
 
+  const paintPlanCost = async () => {
+    const box = document.getElementById("plan-cost");
+    if (!box) return;
+    const minutes = Number(draft.target_minutes) || 0;
+    try { box.innerHTML = costHtml(await api(`/projects/${enc(p.id)}/estimate${minutes ? `?minutes=${minutes}` : ""}`)); }
+    catch (_) { box.innerHTML = costHtml(null); }
+  };
+  let costTimer = null;
   el.querySelectorAll("[data-f]").forEach((input) => {
-    input.oninput = () => { draft[input.dataset.f] = input.type === "number" ? Number(input.value) : input.value; };
+    input.oninput = () => {
+      draft[input.dataset.f] = input.type === "number" ? Number(input.value) : input.value;
+      if (input.dataset.f === "target_minutes") { clearTimeout(costTimer); costTimer = setTimeout(paintPlanCost, 400); }
+    };
     input.disabled = locked;
   });
+  paintPlanCost();
   el.querySelectorAll("[data-takeaway]").forEach((input) => {
     input.disabled = locked;
     input.oninput = () => {
@@ -1393,6 +1406,35 @@ function confirmTranscribe(item, languageOptions, allItems = [], qualityOptions 
   });
 }
 
+// ------------------------------------------------------------------ cost estimate
+
+const VOICE_NAMES = { elevenlabs: "ElevenLabs", gemini: "Gemini", azure: "Azure Speech" };
+const usd = (n) => "$" + Number(n).toFixed(2);
+
+/* The episode's likely cost and, for ElevenLabs, whether the plan has the characters: shown before an
+   episode is created and again on the plan, before the script is written. */
+function costHtml(e) {
+  if (!e) return `<div class="muted">הערכת העלות תופיע אחרי עדכון האפליקציה.</div>`;
+  const v = e.voice;
+  const account = v.account;
+  let voiceLine = `${esc(VOICE_NAMES[v.provider] || v.provider)}: כ-${v.characters.toLocaleString("he-IL")} תווים`;
+  if (v.provider === "gemini") voiceLine = `Gemini: כ-${Math.round(e.target_minutes)} דקות שמע · ${usd(v.cost)}`;
+  else if (v.provider === "azure") voiceLine += ` · ${usd(v.cost)}`;
+  else voiceLine += ` · ${usd(v.cost)} לפי מחיר ה-API (במנוי: נספר מהתווים של המנוי)`;
+  const quota = v.provider === "elevenlabs" && account ? (v.enough
+    ? `<div class="help" style="margin:0">במנוי ElevenLabs שלך (${esc(account.tier)}) נשארו ${account.characters_left.toLocaleString("he-IL")} תווים: מספיק.</div>`
+    : `<div class="banner warn"><p><b>לא מספיק תווים ב-ElevenLabs:</b> הפרק צריך כ-${v.characters.toLocaleString("he-IL")}, ונשארו ${account.characters_left.toLocaleString("he-IL")} (${esc(account.tier)}).
+        מספיק לפרק של עד כ-${v.max_minutes} דקות. אפשר לקצר, לשדרג את המנוי או לבחור בקולות של Gemini.</p></div>`) : "";
+  const writer = e.script.writer === "local" ? "מודל מקומי" : e.script.writer === "azure" ? "Azure OpenAI" : "Gemini";
+  return `<div><h2>הערכת עלות</h2><div class="help">הערכה לפי אורך השיעור והפרק. העלות בפועל נמדדת בזמן העבודה ומופיעה ביומן.</div></div>
+    <div class="cost-rows">
+      <div><span>כתיבת התסריט (${esc(writer)})</span><b>${e.script.writer === "local" ? "חינם" : `<bdi dir="ltr">${usd(e.script.low)}–${usd(e.script.high)}</bdi>`}</b></div>
+      <div><span>קולות</span><b>${voiceLine}</b></div>
+      <div class="total"><span>סה"כ משוער</span><b><bdi dir="ltr">${usd(e.total.low)}–${usd(e.total.high)}</bdi></b></div>
+    </div>${quota}
+    <p class="help" style="margin:0">תמונות לווידאו לא כלולות (כ-0.07 דולר לתמונה). המחירים של Gemini מוכפלים מ-1/1/2027.</p>`;
+}
+
 /* Step 3 of the chain: one podcast from one or more finished transcriptions, with a length recommendation. */
 async function viewChainPodcast(initial) {
   const status = await refreshStatus();
@@ -1415,6 +1457,7 @@ async function viewChainPodcast(initial) {
           אפשר לבחור כמה שיעורים, והם יחוברו לפרק אחד לפי הסדר שכאן.</div></div>
         <div id="sources" class="stack" style="gap:6px"></div></div>
       <div class="card stack" id="recommend"></div>
+      <div class="card stack" id="cost"></div>
       <div class="card stack">
         <label class="field"><span>שם הפרק</span><input type="text" id="title" maxlength="80"></label>
         ${optionSelects()}
@@ -1437,6 +1480,7 @@ async function viewChainPodcast(initial) {
     }
     minutesSelect.value = String(minutes);
     document.querySelectorAll("[data-len]").forEach((b) => b.classList.toggle("active", Number(b.dataset.len) === minutes));
+    minutesSelect.dispatchEvent(new Event("change"));
   };
 
   const paintSources = () => {
@@ -1499,10 +1543,23 @@ async function viewChainPodcast(initial) {
     paintSources();
   };
 
+  const paintCost = async () => {
+    const box = document.getElementById("cost");
+    if (!box) return;
+    if (!estimate) { box.innerHTML = ""; return; }
+    const words = estimate.parts.reduce((sum, part) => sum + part.words, 0);
+    const minutes = Number(minutesSelect.value) || Number(estimate.recommended);
+    const params = new URLSearchParams({ words, minutes, voice: document.getElementById("opt-voice").value,
+      language: document.getElementById("opt-language").value });
+    try { box.innerHTML = costHtml(await api(`/estimate?${params}`)); } catch (_) { box.innerHTML = costHtml(null); }
+  };
+  ["opt-voice", "opt-language"].forEach((id) => document.getElementById(id).addEventListener("change", paintCost));
+  minutesSelect.addEventListener("change", paintCost);
+
   const changed = () => {
     if (!titleTouched) titleInput.value = defaultTitle();
     paintSources();
-    paintRecommend();
+    paintRecommend().then(paintCost);
   };
   minutesSelect.onchange = () => document.querySelectorAll("[data-len]").forEach((b) =>
     b.classList.toggle("active", Number(b.dataset.len) === Number(minutesSelect.value)));

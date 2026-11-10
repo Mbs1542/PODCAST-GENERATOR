@@ -310,6 +310,7 @@ class JobRunner:
         paths.log(f"Using TTS provider: {provider}")
 
         if provider in DIALOGUE_PROVIDERS:
+            self._check_voices_ready(project, settings, provider, paths, force)
             parts, starts = self._render_conversation(project, settings, provider, paths, costs, force)
         else:
             self._stage(project_id, f"מפיק קולות ({provider})")
@@ -390,6 +391,31 @@ class JobRunner:
                 self.store.update(project_id, options={**self.store.get(project_id).options, "drive_url": url})
             self.delivery.upload_async(project_id, target, log, done)
         return target
+
+    def _check_voices_ready(self, project: Project, settings: Settings, provider: str, paths: Any, force: bool) -> None:
+        """Stop before the first character is spent when the voices would fail part-way.
+
+        Checks the account only for real ElevenLabs runs; if the check itself cannot reach ElevenLabs the
+        run goes on as before (the old behaviour), with a note in the log.
+        """
+        if provider != "elevenlabs" or self._dialogue_factory is not None:
+            return
+        from ..audio.dialogue_tts import check_elevenlabs_ready
+
+        dialogue = self.store.read_json(paths.dialogue_path) or {}
+        resuming = not force and any((paths.audio_dir / "conversation").glob("*.mp3"))
+        needed = None if resuming else sum(len(t.get("text", "")) for t in dialogue.get("dialogue", []))
+        self._stage(project.id, "בודק את חשבון ElevenLabs (תווים וקולות)")
+        try:
+            problems = check_elevenlabs_ready(settings.elevenlabs_api_key, {
+                "Roee": settings.elevenlabs_voice_roee, "Noa": settings.elevenlabs_voice_noa}, needed)
+        except Exception as exc:  # no answer from ElevenLabs: do not block, the voices step reports real errors
+            self.store.append_log(project.id, f"לא הצלחתי לבדוק את חשבון ElevenLabs מראש ({exc}); ממשיך")
+            return
+        if problems:
+            raise JobError("לא התחלתי להקליט, כדי לא לבזבז תווים: " + " ".join(problems))
+        if needed:
+            self.store.append_log(project.id, f"ElevenLabs: יש מספיק תווים לפרק (צריך כ-{needed:,})")
 
     def _render_conversation(
         self, project: Project, settings: Settings, provider: str, paths: Any, costs: CostTracker, force: bool
