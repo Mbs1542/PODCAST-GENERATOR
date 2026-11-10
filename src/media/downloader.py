@@ -163,8 +163,31 @@ class _Logger:
         self.log(message)
 
 
+def _is_embed_only(message: str) -> bool:
+    return "embed-only" in message.lower() or "embedding url" in message.lower()
+
+
+def _embed_referers(request: DownloadRequest, profile: SiteProfile) -> List[str]:
+    """Pages that may embed an embed-only Vimeo link: the sites of the chosen cookies, most specific first.
+
+    A bare player.vimeo.com link plays only when the request says it comes from the embedding site, and
+    that is usually the same site the cookies were exported from (yedion.pac.ac.il works, pac.ac.il not).
+    """
+    if profile.name != "vimeo" or request.referer.strip() or not request.cookies:
+        return []
+    try:
+        domains = parse_cookies(Path(request.cookies).read_text(encoding="utf-8", errors="replace")).domains
+    except (OSError, DownloadError):
+        return []
+    hosts = {d.lstrip(".").lower() for d in domains if d and "vimeo" not in d.lower()}
+    return [f"https://{host}/" for host in sorted(hosts, key=lambda h: (-h.count("."), h))]
+
+
 def friendly_error(message: str) -> str:
     text = message.lower()
+    if _is_embed_only(message):
+        return ("הסרטון ב-Vimeo מוטמע באתר ומתנגן רק מתוכו. בחר את העוגיות של האתר (למשל של המכללה), "
+                "או הדבק ב'מתקדם: כתובת מפנה (Referer)' את כתובת האתר שבו הסרטון מופיע.")
     if "http error 403" in text or "forbidden" in text:
         return "האתר סירב לגשת לסרטון (403). בדרך כלל העוגיות (cookies) פגו: ייצא אותן מחדש מהדפדפן."
     if "http error 401" in text or "login" in text and "required" in text or "logged-in" in text:
@@ -236,17 +259,25 @@ def download(
         from yt_dlp import YoutubeDL
 
         ydl_factory = YoutubeDL
-    try:
-        with ydl_factory(options) as ydl:
-            ydl.download([request.url])
-    except DownloadCancelled:
-        raise
-    except Exception as exc:  # yt-dlp wraps everything in DownloadError with the site's message
-        if cancel is not None and cancel.is_set():
-            raise DownloadCancelled("ההורדה בוטלה") from exc
-        raise DownloadError(friendly_error(str(exc))) from exc
-    finally:
-        shutil.rmtree(request.folder / ".partial", ignore_errors=True)
+    referers = _embed_referers(request, profile)
+    while True:
+        try:
+            with ydl_factory(options) as ydl:
+                ydl.download([request.url])
+            break
+        except DownloadCancelled:
+            raise
+        except Exception as exc:  # yt-dlp wraps everything in DownloadError with the site's message
+            if cancel is not None and cancel.is_set():
+                raise DownloadCancelled("ההורדה בוטלה") from exc
+            if referers and _is_embed_only(str(exc)):
+                referer = referers.pop(0)
+                log(f"Vimeo plays this video only inside the site that embeds it; retrying as embedded on {referer}")
+                options["http_headers"] = {**options.get("http_headers", {}), "Referer": referer}
+                continue
+            raise DownloadError(friendly_error(str(exc))) from exc
+        finally:
+            shutil.rmtree(request.folder / ".partial", ignore_errors=True)
     if not written:
         raise DownloadError("לא נמצא סרטון להורדה בכתובת הזו.")
     progress(1.0, "הסתיים")

@@ -22,7 +22,28 @@ GENERAL_MODEL = "large-v3-turbo"
 TRANSCRIBE_LANGUAGES = {"he": "עברית", "en": "English", "auto": "זיהוי אוטומטי"}
 
 
-def model_for_language(language: str) -> str:
+# Quality levels. "balanced" is the long-standing behaviour and the default, so anything transcribed
+# before levels existed (and anything that names no level) is transcribed exactly as it always was.
+TRANSCRIBE_QUALITIES = {
+    "fast": {"label": "מהיר", "note": "כפול מהר בערך, מעט פחות מדויק", "beam_size": 1, "full_model": False},
+    "balanced": {"label": "מאוזן", "note": "ברירת המחדל: מהיר ומדויק", "beam_size": 5, "full_model": False},
+    "accurate": {"label": "מדויק", "note": "המודל המלא: איטי פי 2-3, הורדה חד-פעמית של כ-3.1GB",
+                 "beam_size": 5, "full_model": True},
+}
+DEFAULT_QUALITY = "balanced"
+# The full (non-turbo) large-v3 models, for the "accurate" level
+ACCURATE_MODEL = "ivrit-ai/whisper-large-v3-ct2"
+ACCURATE_GENERAL_MODEL = "large-v3"
+MAX_PARALLEL = 4
+
+
+def normalize_quality(quality: Optional[str]) -> str:
+    return quality if quality in TRANSCRIBE_QUALITIES else DEFAULT_QUALITY
+
+
+def model_for_language(language: str, quality: str = DEFAULT_QUALITY) -> str:
+    if TRANSCRIBE_QUALITIES[normalize_quality(quality)]["full_model"]:
+        return ACCURATE_MODEL if language == "he" else ACCURATE_GENERAL_MODEL
     return DEFAULT_MODEL if language == "he" else GENERAL_MODEL
 
 
@@ -37,13 +58,23 @@ def release_models() -> None:
         _MODEL_CACHE.clear()
 
 
-def _load_model(name: str, device: str, compute_type: str, models_dir: Path):
+def _load_model(name: str, device: str, compute_type: str, models_dir: Path, workers: int = 1):
+    """One loaded copy per model; workers > 1 lets that many transcriptions run on it at once.
+
+    On the CPU the cores are split between the parallel transcriptions instead of each one
+    trying to use all of them.
+    """
     from faster_whisper import WhisperModel
 
-    key = (name, device, compute_type, str(models_dir))
+    workers = max(1, min(MAX_PARALLEL, int(workers)))
+    key = (name, device, compute_type, str(models_dir), workers)
     with _MODEL_LOCK:
         if key not in _MODEL_CACHE:
-            _MODEL_CACHE[key] = WhisperModel(name, device=device, compute_type=compute_type, download_root=str(models_dir))
+            extra = {"num_workers": workers} if workers > 1 else {}
+            if workers > 1 and device == "cpu":
+                extra["cpu_threads"] = max(1, (os.cpu_count() or 4) // workers)
+            _MODEL_CACHE[key] = WhisperModel(name, device=device, compute_type=compute_type,
+                                             download_root=str(models_dir), **extra)
         return _MODEL_CACHE[key]
 MEDIA_EXTENSIONS = {
     ".mp4", ".mkv", ".mov", ".avi", ".webm", ".m4v", ".wmv",
@@ -160,9 +191,13 @@ class HebrewTranscriber:
         device: str = "auto",
         log: Optional[Log] = None,
         language: str = "he",
+        quality: str = DEFAULT_QUALITY,
+        workers: int = 1,
     ) -> None:
         if device not in ("auto", "cuda", "cpu"):
             raise ValueError("device must be auto, cuda or cpu")
+        self.quality = normalize_quality(quality)
+        self.workers = workers
         self.model = model
         self.models_dir = models_dir or default_models_dir()
         self.device = device
@@ -189,12 +224,13 @@ class HebrewTranscriber:
         for device in devices:
             compute_type = "float16" if device == "cuda" else "int8"
             try:
-                self.log(f"Loading {self.model} on {device} ({compute_type})...")
-                model = _load_model(self.model, device, compute_type, self.models_dir)
+                level = TRANSCRIBE_QUALITIES[self.quality]
+                self.log(f"Loading {self.model} on {device} ({compute_type}), quality: {self.quality}...")
+                model = _load_model(self.model, device, compute_type, self.models_dir, self.workers)
                 segments, info = model.transcribe(
                     str(media_path),
                     language=None if self.language == "auto" else self.language,
-                    beam_size=5,
+                    beam_size=level["beam_size"],
                     vad_filter=True,
                     # Long lectures: not conditioning on previous text avoids repetition loops
                     condition_on_previous_text=False,

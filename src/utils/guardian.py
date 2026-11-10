@@ -246,10 +246,15 @@ class ProductionGuardian:
             except Exception:
                 pass
 
-            try:
-                font_title = ImageFont.truetype("arial.ttf", 64)
-                font_body = ImageFont.truetype("arial.ttf", 36)
-            except OSError:
+            font_title = font_body = None
+            for font_name in ("arial.ttf", "Arial.ttf"):  # Windows, then macOS (Pillow matches names exactly)
+                try:
+                    font_title = ImageFont.truetype(font_name, 64)
+                    font_body = ImageFont.truetype(font_name, 36)
+                    break
+                except OSError:
+                    continue
+            if font_title is None:
                 font_title = ImageFont.load_default()
                 font_body = ImageFont.load_default()
 

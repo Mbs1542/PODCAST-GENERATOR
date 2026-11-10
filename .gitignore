@@ -24,3 +24,6 @@ data/eval/lessons/_drafts/
 # Container: the password file and the data volume (keys, projects, models)
 studio.env
 /studio-data/
+
+# macOS folder metadata
+.DS_Store

@@ -81,6 +81,12 @@ def resolve_llm_provider(requested: str, has_azure: bool, has_gemini: bool) -> s
     return "azure"
 
 
+# ElevenLabs models without Hebrew; saved voice overrides that name one are moved to eleven_v3
+_NO_HEBREW_ELEVENLABS_MODELS = {
+    "eleven_multilingual_v2", "eleven_multilingual_v1", "eleven_monolingual_v1",
+    "eleven_turbo_v2", "eleven_turbo_v2_5", "eleven_flash_v2", "eleven_flash_v2_5",
+}
+
 @dataclass(slots=True)
 class Settings:
     """Centralized configuration loaded from environment variables."""
@@ -452,15 +458,16 @@ class Settings:
                         value = 0.85
                     value = max(0.2, min(1.0, value))
                 elif key == "elevenlabs_voice_overrides":
-                    # Migrate old model names to new Hebrew-compatible model
+                    # Migrate models without Hebrew (Multilingual v2, Turbo/Flash v2.5) to eleven_v3,
+                    # the model ElevenLabs documents for Hebrew single-line synthesis
                     if isinstance(value, dict):
                         migrated = False
                         for speaker, config in value.items():
-                            if isinstance(config, dict) and config.get("model") == "eleven_multilingual_v2":
-                                config["model"] = "eleven_turbo_v2_5"
+                            if isinstance(config, dict) and config.get("model") in _NO_HEBREW_ELEVENLABS_MODELS:
+                                config["model"] = "eleven_v3"
                                 migrated = True
                         if migrated:
-                            print("[Settings] Migrated eleven_multilingual_v2 to eleven_turbo_v2_5 in voice overrides")
+                            print("[Settings] Migrated ElevenLabs voice overrides to eleven_v3 (the old model has no Hebrew)")
                             # Save the migrated values back to file
                             prefs[key] = value
                             try:

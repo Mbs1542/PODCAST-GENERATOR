@@ -2,7 +2,11 @@
 
 from .whisper import (
     DEFAULT_MODEL,
+    DEFAULT_QUALITY,
+    MAX_PARALLEL,
     MEDIA_EXTENSIONS,
+    TRANSCRIBE_QUALITIES,
+    normalize_quality,
     TRANSCRIBE_LANGUAGES,
     HebrewTranscriber,
     model_for_language,
@@ -19,7 +23,11 @@ from .whisper import (
 
 __all__ = [
     "DEFAULT_MODEL",
+    "DEFAULT_QUALITY",
+    "MAX_PARALLEL",
     "MEDIA_EXTENSIONS",
+    "TRANSCRIBE_QUALITIES",
+    "normalize_quality",
     "TRANSCRIBE_LANGUAGES",
     "HebrewTranscriber",
     "model_for_language",

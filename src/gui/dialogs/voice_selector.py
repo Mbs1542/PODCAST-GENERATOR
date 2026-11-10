@@ -510,11 +510,11 @@ class ElevenLabsVoiceSelectorDialog(QDialog):
         self.selected_voices = {
             "Roee": {
                 "voice_id": self.roee_combo.currentData(),
-                "model": "eleven_turbo_v2_5",
+                "model": "eleven_v3",
             },
             "Noa": {
                 "voice_id": self.noa_combo.currentData(),
-                "model": "eleven_turbo_v2_5",
+                "model": "eleven_v3",
             },
         }
         

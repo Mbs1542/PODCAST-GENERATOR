@@ -78,13 +78,13 @@ class VoiceLabService:
                 "Roee": {
                     "elevenlabs": {
                         "voice_id": voice_id,
-                        "model": "eleven_multilingual_v2",
+                        "model": "eleven_v3",
                     }
                 },
                 "Noa": {
                     "elevenlabs": {
                         "voice_id": voice_id,
-                        "model": "eleven_multilingual_v2",
+                        "model": "eleven_v3",
                     }
                 },
             },

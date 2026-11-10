@@ -38,8 +38,20 @@ def _running_instance(port: int) -> bool:
         return False
 
 
+def _find_running_instance() -> int:
+    """The port of a copy that is already running (it may have moved off the default port), or 0."""
+    for port in range(DEFAULT_PORT, DEFAULT_PORT + 10):
+        if not _port_free(port) and _running_instance(port):
+            return port
+    return 0
+
+
 def _port_free(port: int) -> bool:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        if os.name != "nt":
+            # Right after a restart the old socket lingers in TIME_WAIT; uvicorn binds with SO_REUSEADDR,
+            # so the check must too or the app drifts to 8766 (on Windows the flag would allow stealing a port)
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind(("127.0.0.1", port))
             return True
@@ -94,8 +106,9 @@ def main() -> None:
         sys.stdout = sys.stderr = open(ROOT / "logs" / "web.log", "a", encoding="utf-8", buffering=1)
 
     local = args.host in ("127.0.0.1", "localhost")
-    if local and not args.port and _running_instance(DEFAULT_PORT):
-        webbrowser.open(f"http://127.0.0.1:{DEFAULT_PORT}/")
+    running = _find_running_instance() if local and not args.port else 0
+    if running:
+        webbrowser.open(f"http://127.0.0.1:{running}/")
         return
     port = args.port or next(p for p in range(DEFAULT_PORT, DEFAULT_PORT + 40) if _port_free(p))
 

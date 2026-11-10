@@ -12,6 +12,7 @@ import io
 import json
 import os
 import re
+import sys
 import threading
 import uuid
 from pathlib import Path
@@ -63,12 +64,20 @@ SYSTEM_FONTS = [
     ("georgiab.ttf", "Georgia Bold", ["en"]),
     ("verdanab.ttf", "Verdana Bold", ["en"]),
     ("calibrib.ttf", "Calibri Bold", ["en"]),
+    # macOS names (its Arial, Tahoma and Times carry Hebrew; plain "arial.ttf" matches Arial.ttf on its
+    # case-insensitive disk)
+    ("Arial Bold.ttf", "Arial Bold", ["he", "en"]),
+    ("Tahoma Bold.ttf", "Tahoma Bold", ["he", "en"]),
+    ("Times New Roman Bold.ttf", "Times New Roman Bold", ["he", "en"]),
     # Linux / the container image (Heebo is baked into the image; DejaVu ships with Debian)
     ("Heebo.ttf", "Heebo (מובנה)", ["he", "en"]),
     ("DejaVuSans-Bold.ttf", "DejaVu Sans Bold", ["he", "en"]),
 ]
 
 LINUX_FONT_DIRS = [Path("/usr/share/fonts"), Path("/usr/local/share/fonts")]
+
+MAC_FONT_DIRS = [Path("/System/Library/Fonts/Supplemental"), Path("/System/Library/Fonts"),
+                 Path("/Library/Fonts"), Path.home() / "Library" / "Fonts"]
 
 DEFAULT_PREFS = {"theme": "auto", "accent": "teal", "logo": "default", "font_he": "auto", "font_en": "auto"}
 
@@ -196,7 +205,8 @@ class BrandStore:
         return items
 
     def _system_font(self, filename: str) -> Optional[Path]:
-        for folder in _windows_font_dirs():
+        mac_dirs = MAC_FONT_DIRS if sys.platform == "darwin" else []
+        for folder in [*_windows_font_dirs(), *mac_dirs]:
             path = folder / filename
             if path.exists():
                 return path
@@ -228,8 +238,8 @@ class BrandStore:
             return self.font_path(chosen)
         if language == "en" and prefs["font_he"] != "auto":
             return self.font_path(prefs["font_he"])  # Hebrew fonts here all carry Latin too
-        for candidate in ("g:heebo", "g:rubik", "s:arialbd.ttf", "s:segoeuib.ttf", "s:arial.ttf",
-                          "s:Heebo.ttf", "s:DejaVuSans-Bold.ttf"):
+        for candidate in ("g:heebo", "g:rubik", "s:arialbd.ttf", "s:Arial Bold.ttf", "s:segoeuib.ttf",
+                          "s:arial.ttf", "s:Tahoma Bold.ttf", "s:Heebo.ttf", "s:DejaVuSans-Bold.ttf"):
             path = self.font_path(candidate)
             if path:
                 return path

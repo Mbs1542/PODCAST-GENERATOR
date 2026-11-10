@@ -239,7 +239,7 @@ def _build_inputs_card(
         "  • מהיר ומשתלם ($0.016/1K תווים)\n"
         "  • איכות טובה לרוב השימושים\n\n"
         "🎙️ ElevenLabs (מומלץ לעברית):\n"
-        "  • תומך בעברית עם מודל eleven_turbo_v2_5\n"
+        "  • תומך בעברית עם המודלים eleven_v3 / eleven_v4\n"
         "  • קולות טבעיים יותר, ביטוי רגשי טוב יותר\n"
         "  • 30+ קולות לבחירה\n"
         "  • יקר יותר (~$0.30/1K תווים)"
@@ -253,7 +253,7 @@ def _build_inputs_card(
     parent.elevenlabs_voices_btn = QPushButton("בחר קולות")
     parent.elevenlabs_voices_btn.setToolTip(
         "פתח את בורר הקולות של ElevenLabs לבחירת קולות מותאמים אישית.\n"
-        "30+ קולות זמינים, כולם תומכים בעברית עם מודל eleven_turbo_v2_5."
+        "30+ קולות זמינים, קוראים עברית עם המודלים eleven_v3 / eleven_v4."
     )
     parent.elevenlabs_voices_btn.clicked.connect(parent._open_elevenlabs_voice_selector)
     parent.elevenlabs_voices_btn.setVisible(current_provider == "elevenlabs")

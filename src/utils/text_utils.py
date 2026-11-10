@@ -5,7 +5,15 @@ from dataclasses import dataclass
 from typing import Optional
 
 import arabic_reshaper
-from bidi.algorithm import get_display
+
+try:  # python-bidi >= 0.5: the maintained implementation, which orders mixed Hebrew/English runs itself
+    from bidi import get_display
+except ImportError:  # pragma: no cover - python-bidi < 0.5
+    from bidi.algorithm import get_display
+
+# Direction marks are invisible to a real text layout engine, but Pillow without libraqm draws them as
+# boxes, so they never stay in display text
+_BIDI_CONTROLS_RE = re.compile("[‎‏‪-‮⁦-⁩]")
 
 # BiDi isolation markers (avoid LTR fragments flipping surrounding RTL)
 LRI = "\u2066"  # left-to-right isolate
@@ -54,13 +62,16 @@ def _anchor_punctuation(text: str) -> str:
     return text
 
 
-def shape_rtl(text: Optional[str], add_isolates: bool = True) -> str:
+def shape_rtl(text: Optional[str], add_isolates: bool = False) -> str:
     """
     Apply Arabic reshaping + BiDi display for Hebrew/RTL text.
 
     - Uses arabic_reshaper + bidi.get_display for reliable glyph shaping.
-    - Optionally wraps embedded LTR spans with LRI/PDI to avoid flip.
+    - Embedded English and numbers are ordered by the bidi algorithm itself. LRI/PDI isolates
+      (add_isolates) are off by default: the legacy algorithm raised on them, which silently left the
+      text unordered, and the current one misorders runs around them.
     - Anchors trailing punctuation to the RTL side.
+    - Direction marks are removed from the result (Pillow would draw them as boxes).
     """
     if not text:
         return ""
@@ -73,10 +84,10 @@ def shape_rtl(text: Optional[str], add_isolates: bool = True) -> str:
     # Final shaping into visual order
     try:
         reshaped = arabic_reshaper.reshape(processed)
-        return get_display(reshaped)
+        return _BIDI_CONTROLS_RE.sub("", get_display(reshaped))
     except Exception:
         # Defensive: fall back to original string if shaping fails
-        return processed
+        return _BIDI_CONTROLS_RE.sub("", processed)
 
 
 def srt_text(logical: Optional[str]) -> str:

@@ -120,7 +120,10 @@ def plan_slides(
 
 def _font(path: Optional[Path], size: int, bold: bool = True) -> ImageFont.ImageFont:
     candidates = [str(path)] if path else []
-    candidates += ["arialbd.ttf" if bold else "arial.ttf", "tahomabd.ttf" if bold else "tahoma.ttf", "DejaVuSans.ttf"]
+    # Windows names, then macOS names (Pillow searches the system font folders for both), then Linux
+    candidates += ["arialbd.ttf" if bold else "arial.ttf", "tahomabd.ttf" if bold else "tahoma.ttf",
+                   "Arial Bold.ttf" if bold else "Arial.ttf", "Tahoma Bold.ttf" if bold else "Tahoma.ttf",
+                   "DejaVuSans.ttf"]
     for candidate in candidates:
         try:
             font = ImageFont.truetype(candidate, size)

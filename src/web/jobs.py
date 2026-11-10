@@ -12,6 +12,7 @@ the user can fix the cause (usually settings) and retry the same step.
 
 from __future__ import annotations
 
+import inspect
 import json
 import queue
 import re
@@ -23,7 +24,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from ..audio.dialogue_tts import DIALOGUE_PROVIDERS, DialogueTTSError, build_dialogue_synth, render_dialogue
 from ..engine import ScriptEngine
-from ..transcribe import HebrewTranscriber, TranscribeError, download_url, to_srt, to_text
+from ..transcribe import HebrewTranscriber, TranscribeError, download_url, model_for_language, normalize_quality, to_srt, to_text
 from ..utils import CostTracker, Settings, VoiceProfileManager, get_logger
 from ..utils.keep_awake import keep_awake
 from .projects import Project, ProjectStore
@@ -99,13 +100,15 @@ class JobRunner:
         self.store = store
         self.settings_store = settings_store
         self.brand: Any = None  # set by the app: logo, fonts and accent for the video
+        self.delivery: Any = None  # set by the app: the podcast's own folder and Google Drive
         self._llms_factory = llms_factory
         self._tts_factory = tts_factory
         self._dialogue_factory = dialogue_factory
         self._image_maker_factory = image_maker_factory
         self._video_renderer = video_renderer
         self._params: Dict[str, Dict[str, Any]] = {}
-        self._transcriber_factory = transcriber_factory or (lambda log: HebrewTranscriber(log=log))
+        self._transcriber_factory = transcriber_factory or (
+            lambda log, quality="balanced": HebrewTranscriber(model=model_for_language("he", quality), quality=quality, log=log))
         self._queue: "queue.Queue[tuple]" = queue.Queue()
         self._busy = threading.Event()
         self.logger = get_logger(self.__class__.__name__)
@@ -232,7 +235,12 @@ class JobRunner:
                 self.store.update(project.id, progress=min(position / duration, 1.0),
                                   stage=f"מתמלל: {position / 60:.0f} מתוך {duration / 60:.0f} דקות")
 
-        transcriber = self._transcriber_factory(lambda message: self.store.append_log(project.id, message))
+        log = lambda message: self.store.append_log(project.id, message)  # noqa: E731
+        quality = normalize_quality(self.settings_store.read_env().get("TRANSCRIBE_QUALITY"))
+        if "quality" in inspect.signature(self._transcriber_factory).parameters:
+            transcriber = self._transcriber_factory(log, quality=quality)
+        else:  # factories that predate quality levels
+            transcriber = self._transcriber_factory(log)
         segments = transcriber.transcribe(media, progress)
         if not segments:
             raise JobError("לא זוהה דיבור בהקלטה")
@@ -308,6 +316,61 @@ class JobRunner:
             self.store.append_log(project_id, f"עלות הקולות: ${costs.tts_cost:.2f} (חלקים שכבר הוקלטו לא נספרים שוב)")
         self.store.append_log(project_id, f"הפרק מוכן ({provider}).")
         self.store.update(project_id, status="audio_ready")
+        self.deliver(project_id)
+
+    def deliver(self, project_id: str, upload: Optional[bool] = None) -> Optional[Path]:
+        """The lesson summary, then the podcast's own folder (lecture, transcripts, podcast, video, summary),
+        then Google Drive when automatic upload is on (or upload=True).
+
+        Nothing here can fail a finished episode: problems are written to the project's log.
+        """
+        from ..video.slideshow import ACCENTS
+        from .delivery import DeliveryError, MEDIA_SUFFIXES, build_output_folder, output_folder_for
+        from .summary import SummaryError, project_summary, render_html, write_docx
+
+        project = self.store.get(project_id)
+        paths = self.store.run_paths(project)
+        log = lambda message: self.store.append_log(project_id, message)  # noqa: E731
+        try:
+            model = project_summary(self.store, project)
+        except SummaryError as exc:
+            log(f"סיכום השיעור לא נוצר: {exc}")
+            return None
+        try:
+            accent = ACCENTS.get(self.brand.prefs().get("accent", "teal"), ACCENTS["teal"]) if self.brand else ACCENTS["teal"]
+            page = render_html(model, accent)
+            (self.store.folder(project) / "summary.html").write_text(page, encoding="utf-8")
+            if self.delivery is None:
+                return None
+            docx = write_docx(model, self.store.folder(project) / "summary.docx", accent)
+            options = project.options
+            lectures = [Path(m) for m in options.get("source_media", []) if Path(m).exists()]
+            lectures += [f for f in self.store.source_dir(project).glob("*") if f.suffix.lower() in MEDIA_SUFFIXES]
+            transcripts = [(Path(t), Path(t).name) for t in options.get("source_transcripts", []) if Path(t).exists()]
+            if not transcripts:  # a project that transcribed its own upload
+                name = re.sub(r'[\\/:*?"<>|]+', "_", project.title).strip() or "podcast"
+                folder = self.store.folder(project)
+                transcripts = [(folder / f"transcript{ext}", f"{name} - תמלול{ext}") for ext in (".srt", ".txt")
+                               if (folder / f"transcript{ext}").exists()]
+            target = output_folder_for(self.delivery.root_for(options), project.title, project.id)
+            video = paths.final_video_path if paths.final_video_path.exists() else None
+            files = build_output_folder(target, project.id, project.title, lectures=lectures, transcripts=transcripts,
+                                        audio=paths.final_audio_path, video=video, summary_html=page,
+                                        summary_docx=docx, log=log)
+            self.store.update(project_id, options={**self.store.get(project_id).options, "output_folder": str(target)})
+            log(f"תיקיית הפרק מוכנה ({len(files)} קבצים): {target}")
+        except (DeliveryError, OSError) as exc:
+            log(f"תיקיית הפרק לא נוצרה: {exc}")
+            return None
+        except Exception as exc:  # never fail a finished episode
+            self.logger.exception("Delivery failed for %s", project_id)
+            log(f"תיקיית הפרק לא נוצרה ({exc.__class__.__name__})")
+            return None
+        if upload or (upload is None and self.delivery.should_upload()):
+            def done(url: str) -> None:
+                self.store.update(project_id, options={**self.store.get(project_id).options, "drive_url": url})
+            self.delivery.upload_async(project_id, target, log, done)
+        return target
 
     def _render_conversation(
         self, project: Project, settings: Settings, provider: str, paths: Any, costs: CostTracker, force: bool
@@ -432,3 +495,4 @@ class JobRunner:
             raise JobError("יצירת הווידאו הסתיימה בלי קובץ. פרטים ביומן העבודה.")
         self.store.append_log(project_id, "הווידאו מוכן")
         self.store.update(project_id, status="video_ready")
+        self.deliver(project_id)  # the video joins the podcast's folder (and Drive)

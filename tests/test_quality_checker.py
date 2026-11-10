@@ -88,13 +88,13 @@ def test_model_check_passes_with_safe_profile(tmp_path: Path):
                     "Noa": {
                         "elevenlabs": {
                             "voice_id": "21m00Tcm4TlvDq8ikWAM",
-                            "model": "eleven_turbo_v2_5",
+                            "model": "eleven_v3",
                         }
                     },
                     "Roee": {
                         "elevenlabs": {
                             "voice_id": "pNInz6obpgDQGcFmaJgB",
-                            "model": "eleven_turbo_v2_5",
+                            "model": "eleven_v4",
                         }
                     },
                 }
@@ -107,4 +107,4 @@ def test_model_check_passes_with_safe_profile(tmp_path: Path):
     result = checker._check_model_compatibility()
 
     assert result.status == "PASS"
-    assert result.details["models"]["Noa"] == "eleven_turbo_v2_5"
+    assert result.details["models"]["Noa"] == "eleven_v3"

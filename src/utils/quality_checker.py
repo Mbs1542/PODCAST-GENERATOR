@@ -30,7 +30,7 @@ from pydub import AudioSegment
 
 from .logging import get_logger
 
-# Voice IDs that support Hebrew with eleven_turbo_v2_5
+# Voice IDs that support Hebrew with eleven_v3
 HEBREW_SUPPORTED_VOICES = {
     "21m00Tcm4TlvDq8ikWAM",  # Rachel - female, warm
     "AZnzlk1XvdvUeBnXmlld",  # Domi - female, energetic
@@ -39,18 +39,16 @@ HEBREW_SUPPORTED_VOICES = {
     "pNInz6obpgDQGcFmaJgB",  # Adam - male, deep
 }
 
-# Hebrew-compatible models (support Hebrew text without explicit language_code)
-# Note: eleven_multilingual_v2 does NOT support explicit language_code='he'
-HEBREW_COMPATIBLE_MODELS = {
-    "eleven_turbo_v2_5",      # Recommended for Hebrew
-    "eleven_flash_v2_5",      # Fast, good for Hebrew
-    "eleven_multilingual_v3", # Latest multilingual
-}
+# Per ElevenLabs' model docs only the v3/v4 generation reads Hebrew. eleven_v4 is served by the
+# Text to Dialogue API (both hosts together); single-line synthesis uses eleven_v3.
+HEBREW_RECOMMENDED_MODEL = "eleven_v3"
+HEBREW_COMPATIBLE_MODELS = {"eleven_v3", "eleven_v4"}
 
-# Models that FAIL with explicit Hebrew language code
+# Models without Hebrew (Turbo/Flash v2.5 are also deprecated); text would be read with the wrong
+# pronunciation or refused with language_code='he'
 HEBREW_INCOMPATIBLE_MODELS = {
-    "eleven_multilingual_v2",  # Does NOT support language_code='he'
-    "eleven_turbo_v2",         # Older turbo, may have issues
+    "eleven_multilingual_v2", "eleven_multilingual_v1", "eleven_monolingual_v1",
+    "eleven_turbo_v2", "eleven_turbo_v2_5", "eleven_flash_v2", "eleven_flash_v2_5",
 }
 
 
@@ -330,7 +328,7 @@ class QualityChecker:
         configured = {}
         for speaker, config in overrides.items():
             voice_id = config.get("voice_id", "")
-            model = config.get("model", "eleven_turbo_v2_5")
+            model = config.get("model", HEBREW_RECOMMENDED_MODEL)
             configured[speaker] = {
                 "voice_id": voice_id[:12] + "..." if len(voice_id) > 12 else voice_id,
                 "model": model,
@@ -409,7 +407,7 @@ class QualityChecker:
         
         if overrides:
             for speaker, config in overrides.items():
-                model = config.get("model", "eleven_turbo_v2_5")
+                model = config.get("model", HEBREW_RECOMMENDED_MODEL)
                 model_entries.append((speaker, model, "override"))
         else:
             model_entries = self._load_profile_voice_models()
@@ -430,7 +428,7 @@ class QualityChecker:
             offending = incompatible[0]
             self.report.recommendations.append(
                 f"Model '{offending[1]}' does NOT support Hebrew. "
-                "Change to 'eleven_turbo_v2_5' in voice settings or voice profile."
+                f"Change to '{HEBREW_RECOMMENDED_MODEL}' in voice settings or voice profile."
             )
             return CheckResult(
                 name="model_compatibility",
@@ -439,7 +437,7 @@ class QualityChecker:
                 details={
                     "incompatible": incompatible,
                     "source": source,
-                    "recommended_model": "eleven_turbo_v2_5",
+                    "recommended_model": HEBREW_RECOMMENDED_MODEL,
                     "compatible_models": list(HEBREW_COMPATIBLE_MODELS),
                 },
             )
@@ -493,7 +491,7 @@ class QualityChecker:
                 continue
             eleven_cfg = payload.get("elevenlabs")
             if isinstance(eleven_cfg, dict) and eleven_cfg.get("voice_id"):
-                model = eleven_cfg.get("model", "eleven_turbo_v2_5")
+                model = eleven_cfg.get("model", HEBREW_RECOMMENDED_MODEL)
                 models.append((speaker, model, default_profile))
         return models
     
@@ -539,7 +537,7 @@ class QualityChecker:
                     client.generate(
                         text=test_text,
                         voice=test_voice,
-                        model="eleven_turbo_v2_5"
+                        model=HEBREW_RECOMMENDED_MODEL
                     )
 
                     # If we get here, quota is OK

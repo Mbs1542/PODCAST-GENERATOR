@@ -348,3 +348,19 @@ details.log pre { max-height: 260px; overflow: auto; background: var(--surface-2
   .segment { grid-template-columns: 1fr; }
   .segment .controls { flex-direction: row; }
 }
+
+/* ---------------------------------------------------------------- chain: download -> transcription -> podcast -> summary */
+.stepper.chain { margin-bottom: 14px; }
+.folder-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.folder-row input { flex: 1 1 240px; min-width: 0; }
+.folder-line { overflow-wrap: anywhere; }
+.link { border: 0; background: none; padding: 0; color: var(--accent); cursor: pointer; font: inherit; text-decoration: underline; }
+.ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.source-row { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.source-row.on { border-color: var(--accent); background: var(--surface-2); }
+.length-choices .btn.active { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.summary-card { border-inline-start: 4px solid var(--accent); }
+dialog.modal { border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text);
+  padding: 20px 22px; width: min(520px, calc(100vw - 32px)); box-shadow: 0 20px 60px rgba(0, 0, 0, .35); }
+dialog.modal::backdrop { background: rgba(0, 0, 0, .45); }
+dialog.modal h2 { margin: 0; }

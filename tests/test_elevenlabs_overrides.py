@@ -32,14 +32,14 @@ class DummyVoiceProfile:
 @pytest.mark.parametrize(
     "override,expected_voice",
     [
-        ({"voice_id": "override123", "model": "eleven_turbo_v2_5"}, "override123"),
+        ({"voice_id": "override123", "model": "eleven_v3"}, "override123"),
     ],
 )
 def test_voice_override_preferred(override, expected_voice):
     from src.audio.elevenlabs_tts import ElevenLabsSpeechSynthesizer
 
     settings = _mock_settings({"Roee": override})
-    fallback = {"voice_id": "profileVoice", "model": "eleven_turbo_v2_5"}
+    fallback = {"voice_id": "profileVoice", "model": "eleven_v3"}
     voice_manager = MagicMock()
     voice_manager.get.return_value = DummyVoiceProfile(fallback)
 
@@ -57,8 +57,8 @@ def test_voice_override_preferred(override, expected_voice):
 def test_invalid_override_logs_warning():
     from src.audio.elevenlabs_tts import ElevenLabsSpeechSynthesizer
 
-    settings = _mock_settings({"Roee": {"model": "eleven_turbo_v2_5"}})
-    fallback = {"voice_id": "profileVoice", "model": "eleven_turbo_v2_5"}
+    settings = _mock_settings({"Roee": {"model": "eleven_v3"}})
+    fallback = {"voice_id": "profileVoice", "model": "eleven_v3"}
     voice_manager = MagicMock()
     voice_manager.get.return_value = DummyVoiceProfile(fallback)
 

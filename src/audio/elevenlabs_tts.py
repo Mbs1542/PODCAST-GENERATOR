@@ -72,7 +72,7 @@ class ElevenLabsSpeechSynthesizer:
     #   - Arnold (VR6AewLTigWG4xSOukaG)
     #
     # Best practices for Hebrew synthesis with ElevenLabs:
-    #   • Use model `eleven_turbo_v2_5` or newer multilingual variants
+    #   • Use eleven_v3 (single lines) or eleven_v4 (Text to Dialogue); older models have no Hebrew
     #   • Split long paragraphs into <800 characters per request
     #   • Apply SSML phoneme tags for tricky pronunciations
     #   • Keep `stability≈0.5`, `similarity_boost≈0.75`, `use_speaker_boost=True`
@@ -387,7 +387,7 @@ class ElevenLabsSpeechSynthesizer:
         if override:
             voice_id = override.get("voice_id")
             if voice_id:
-                model = override.get("model") or "eleven_turbo_v2_5"
+                model = override.get("model") or self.HEBREW_PREFERRED_MODEL
                 self.logger.info("Using ElevenLabs override for %s (%s)", speaker, voice_id[:8])
                 result = {
                     "voice_id": voice_id,

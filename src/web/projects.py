@@ -161,6 +161,7 @@ class ProjectStore:
             "transcript_srt": self.folder(project) / "transcript.srt",
             "transcript_txt": self.folder(project) / "transcript.txt",
             "script_json": paths.dialogue_path,
+            "summary_html": self.folder(project) / "summary.html",
         }
         return {name: path for name, path in candidates.items() if path.exists()}
 

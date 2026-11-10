@@ -4,13 +4,15 @@ Each item is a folder under <outputs>/media/<id> with item.json:
   download       a link (a video, a playlist or a whole course page) -> media files
   transcription  one media file (uploaded, or from a download) -> SRT + TXT
 
-Downloads run two at a time (network bound); transcriptions run one at a time (one GPU)
-and share one loaded model until the queue is empty. Every job keeps the computer awake.
+Downloads run two at a time (network bound). Transcriptions run as many at a time as the settings
+allow (TRANSCRIBE_PARALLEL, default 1) and share one loaded model until the queue is empty; each one
+has a quality level (default "balanced", the long-standing behaviour). Every job keeps the computer awake.
 A transcription can become a podcast project in one step.
 """
 
 from __future__ import annotations
 
+import inspect
 import json
 import queue
 import re
@@ -25,7 +27,17 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 from ..media import DownloadCancelled, DownloadError, DownloadRequest, QUALITIES, download, parse_cookies
-from ..transcribe import TRANSCRIBE_LANGUAGES, HebrewTranscriber, TranscribeError, model_for_language, release_models, to_srt, to_text
+from ..transcribe import (
+    MAX_PARALLEL,
+    TRANSCRIBE_LANGUAGES,
+    HebrewTranscriber,
+    TranscribeError,
+    model_for_language,
+    normalize_quality,
+    release_models,
+    to_srt,
+    to_text,
+)
 from ..transcribe.whisper import MEDIA_EXTENSIONS
 from ..utils.keep_awake import keep_awake
 from ..utils.logging import get_logger
@@ -124,19 +136,40 @@ class MediaStore:
                 item.log.append(f"{datetime.now():%H:%M:%S}  {line}")
                 self.save(item)
 
+    def path_of(self, item: MediaItem, entry: Dict[str, Any]) -> Path:
+        """Where a registered file lives: inside the item's folder, or in a folder the user chose."""
+        return Path(entry["path"]) if entry.get("path") else self.folder(item.id) / entry["name"]
+
     def file_path(self, item: MediaItem, index: int) -> Optional[Path]:
         if not 0 <= index < len(item.files):
             return None
-        path = self.folder(item.id) / item.files[index]["name"]
+        path = self.path_of(item, item.files[index])
         return path if path.exists() else None
 
     def register_files(self, item_id: str, paths: List[Path]) -> MediaItem:
-        folder = self.folder(item_id)
+        folder = self.folder(item_id).resolve()
         entries = []
         for path in paths:
-            relative = path.resolve().relative_to(folder.resolve()).as_posix()
-            entries.append({"name": relative, "kind": _kind_of(path), "size": path.stat().st_size})
+            resolved = path.resolve()
+            entry = {"kind": _kind_of(path), "size": path.stat().st_size}
+            if resolved.is_relative_to(folder):
+                entry["name"] = resolved.relative_to(folder).as_posix()
+            else:  # saved in the user's own folder: keep the full path, the UI shows only the name
+                entry.update(name=resolved.name, path=str(resolved))
+            entries.append(entry)
         return self.update(item_id, files=entries)
+
+    def media_paths(self, item: MediaItem) -> List[Path]:
+        return [self.path_of(item, f) for f in item.files if f["kind"] in ("video", "audio")]
+
+    def subtitles_path(self, item: MediaItem) -> Optional[Path]:
+        path = next((self.path_of(item, f) for f in item.files if f["kind"] == "subtitles"), None)
+        return path if path is not None and path.exists() else None
+
+    def output_dir(self, item: MediaItem) -> Optional[Path]:
+        """The user's own folder this item saved into, if any."""
+        external = next((Path(f["path"]).parent for f in item.files if f.get("path")), None)
+        return external or (Path(item.options["folder"]) if item.options.get("folder") else None)
 
     def delete(self, item_id: str, force: bool = False) -> bool:
         item = self.get(item_id)
@@ -196,7 +229,8 @@ class MediaRunner:
         self.store = store
         self._download = downloader or download
         self._transcriber_factory = transcriber_factory or (
-            lambda language, log: HebrewTranscriber(model=model_for_language(language), language=language, log=log)
+            lambda language, log, quality="balanced", workers=1: HebrewTranscriber(
+                model=model_for_language(language, quality), language=language, log=log, quality=quality, workers=workers)
         )
         self._downloads = ThreadPoolExecutor(max_workers=DOWNLOAD_WORKERS, thread_name_prefix="mbs-download")
         self._transcriptions: "queue.Queue[str]" = queue.Queue()
@@ -204,7 +238,13 @@ class MediaRunner:
         self._active = 0
         self._lock = threading.Lock()
         self.logger = get_logger(self.__class__.__name__)
-        threading.Thread(target=self._transcription_worker, name="mbs-transcribe", daemon=True).start()
+        # How many transcriptions may run at once; the app points this at the settings (read on every job)
+        self.parallel_limit: Callable[[], Any] = lambda: 1
+        self._slots = threading.Condition()
+        self._holding = 0       # workers holding a slot (running a job, or about to take one)
+        self._transcribing = 0  # jobs actually running
+        for number in range(MAX_PARALLEL):
+            threading.Thread(target=self._transcription_worker, name=f"mbs-transcribe-{number}", daemon=True).start()
 
     @property
     def busy(self) -> bool:
@@ -226,15 +266,18 @@ class MediaRunner:
         self._downloads.submit(self._guard, item.id, self._run_download)
         return item
 
-    def submit_transcription(self, media: Path, title: str, language: str, parent: str = "") -> MediaItem:
-        item = self.store.create("transcription", title, media.name, {"language": language, "media": str(media)}, parent)
-        self._transcriptions.put(item.id)
+    def submit_transcription(self, media: Path, title: str, language: str, parent: str = "",
+                             quality: str = "balanced") -> MediaItem:
+        options = {"language": language, "media": str(media), "quality": normalize_quality(quality)}
+        item = self.store.create("transcription", title, media.name, options, parent)
+        self._enqueue(item.id)
         return item
 
-    def prepare_upload(self, filename: str, language: str) -> tuple:
+    def prepare_upload(self, filename: str, language: str, quality: str = "balanced") -> tuple:
         """A transcription item whose source file is streamed into its own folder; returns (item, target path)."""
         name = _SAFE_RE.sub("_", Path(filename).name).strip() or "recording"
-        item = self.store.create("transcription", Path(name).stem, name, {"language": language}, "")
+        item = self.store.create("transcription", Path(name).stem, name,
+                                 {"language": language, "quality": normalize_quality(quality)}, "")
         target = self.store.folder(item.id) / "source" / name
         target.parent.mkdir(parents=True)
         self.store.update(item.id, status="uploading", stage="מעלה")
@@ -244,7 +287,7 @@ class MediaRunner:
         item = self.store.get(item_id)
         options = {**item.options, "media": str(media)}
         item = self.store.update(item_id, options=options, status="queued", stage="ממתין בתור")
-        self._transcriptions.put(item_id)
+        self._enqueue(item_id)
         return item
 
     def retry(self, item_id: str) -> MediaItem:
@@ -256,7 +299,7 @@ class MediaRunner:
             self._cancel[item.id] = threading.Event()
             self._downloads.submit(self._guard, item.id, self._run_download)
         else:
-            self._transcriptions.put(item.id)
+            self._enqueue(item.id)
         return item
 
     def cancel(self, item_id: str) -> None:
@@ -290,19 +333,64 @@ class MediaRunner:
             with self._lock:
                 self._active -= 1
 
+    def _enqueue(self, item_id: str) -> None:
+        self._transcriptions.put(item_id)
+        with self._slots:  # waiting workers re-check the limit now (it may have been raised in the settings)
+            self._slots.notify_all()
+
+    def limit(self) -> int:
+        try:
+            return max(1, min(MAX_PARALLEL, int(self.parallel_limit())))
+        except (TypeError, ValueError):
+            return 1
+
     def _transcription_worker(self) -> None:
+        """Every worker first takes a slot, so at most limit() transcriptions run at once.
+
+        A worker gives its slot back every few seconds while the queue is empty, so a lowered
+        limit takes effect without a restart (jobs already running finish first).
+        """
         while True:
-            item_id = self._transcriptions.get()
-            self._guard(item_id, self._run_transcription)
-            if self._transcriptions.empty():
-                release_models()  # free the GPU until the next batch
+            with self._slots:
+                while self._holding >= self.limit():
+                    self._slots.wait(timeout=2)
+                self._holding += 1
+            try:
+                try:
+                    item_id = self._transcriptions.get(timeout=2)
+                except queue.Empty:
+                    continue
+                with self._slots:
+                    self._transcribing += 1
+                try:
+                    self._guard(item_id, self._run_transcription)
+                finally:
+                    with self._slots:
+                        self._transcribing -= 1
+                        idle = self._transcribing == 0 and self._transcriptions.empty()
+                    if idle:
+                        release_models()  # free the GPU / memory until the next batch
+            finally:
+                with self._slots:
+                    self._holding -= 1
+                    self._slots.notify_all()
+
+    def _make_transcriber(self, language: str, log: Callable[[str], None], quality: str) -> Any:
+        """The configured transcriber; factories that predate quality levels are called the old way."""
+        params = inspect.signature(self._transcriber_factory).parameters
+        if "quality" in params:
+            return self._transcriber_factory(language, log, quality=quality, workers=self.limit())
+        return self._transcriber_factory(language, log)
 
     def _run_download(self, item: MediaItem) -> None:
         options = item.options
         cookies = self.store.cookie_path(options.get("cookies", ""))
+        folder = Path(options["folder"]) if options.get("folder") else self.store.folder(item.id) / "files"
+        if options.get("folder"):
+            self.store.append_log(item.id, f"שומר בתיקייה: {folder}")
         request = DownloadRequest(
             url=item.source,
-            folder=self.store.folder(item.id) / "files",
+            folder=folder,
             quality=options.get("quality", "best"),
             playlist=bool(options.get("playlist")),
             subtitles=bool(options.get("subtitles", True)),
@@ -324,7 +412,8 @@ class MediaRunner:
         if options.get("transcribe"):
             language = options.get("language", "he")
             for media in files:
-                self.submit_transcription(media, media.stem, language, parent=item.id)
+                self.submit_transcription(media, media.stem, language, parent=item.id,
+                                          quality=options.get("transcribe_quality", "balanced"))
             self.store.append_log(item.id, f"{len(files)} קבצים נשלחו לתמלול")
 
     def _run_transcription(self, item: MediaItem) -> None:
@@ -341,12 +430,18 @@ class MediaRunner:
                 self.store.update(item.id, progress=min(position / duration, 0.999),
                                   stage=f"מתמלל: {position / 60:.0f} מתוך {duration / 60:.0f} דקות")
 
-        transcriber = self._transcriber_factory(language, lambda line: self.store.append_log(item.id, line))
+        # Items made before quality levels have none: they keep the long-standing "balanced" behaviour
+        quality = normalize_quality(item.options.get("quality"))
+        transcriber = self._make_transcriber(language, lambda line: self.store.append_log(item.id, line), quality)
         segments = transcriber.transcribe(media, progress)
         if not segments:
             raise TranscribeError("לא זוהה דיבור בקובץ.")
-        folder = self.store.folder(item.id)
-        stem = _SAFE_RE.sub("_", Path(item.title).stem)[:80].strip() or "transcript"
+        own = self.store.folder(item.id)
+        if media.resolve().is_relative_to(own.resolve()):  # an upload: the result stays with the item
+            folder, stem = own, _SAFE_RE.sub("_", Path(item.title).stem)[:80].strip() or "transcript"
+        else:  # from a download: the transcription sits next to its video, wherever that was saved
+            folder, stem = media.parent, f"{media.stem} - תמלול"
+            self.store.append_log(item.id, f"שומר את התמלול ליד הווידאו: {folder}")
         srt, txt = folder / f"{stem}.srt", folder / f"{stem}.txt"
         srt.write_text(to_srt(segments), encoding="utf-8")
         txt.write_text(to_text(segments), encoding="utf-8")
@@ -363,6 +458,7 @@ def validate_download_options(body: Dict[str, Any]) -> Dict[str, Any]:
         "playlist": bool(body.get("playlist")),
         "subtitles": bool(body.get("subtitles", True)),
         "transcribe": bool(body.get("transcribe")),
+        "transcribe_quality": normalize_quality(body.get("transcribe_quality")),
         "language": language if language in TRANSCRIBE_LANGUAGES else "he",
         "cookies": re.sub(r"[^\w\-]", "", str(body.get("cookies") or ""))[:40],
         "referer": str(body.get("referer") or "").strip()[:500] if str(body.get("referer") or "").startswith("http") else "",

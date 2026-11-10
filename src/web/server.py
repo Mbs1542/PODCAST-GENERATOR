@@ -30,6 +30,8 @@ from ..transcribe import MEDIA_EXTENSIONS
 from ..video import ACCENTS, SlideStyle, draw_slide
 from ..video.slideshow import Slide
 from .brand import BrandError, BrandStore
+from .chain import ChainError, pick_folder, resolve_save_folder, reveal
+from .delivery import Delivery, DeliveryError
 from .gallery import Gallery, GalleryError
 from .jobs import JobError, JobRunner
 from .media import MediaRunner, MediaStore
@@ -75,9 +77,12 @@ class AppState:
         self.brand = BrandStore(outputs, root)
         self.runner = runner_factory(self.store, self.settings_store) if runner_factory else JobRunner(self.store, self.settings_store)
         self.runner.brand = self.brand
+        self.delivery = Delivery(Path(outputs) / "private")
+        self.runner.delivery = self.delivery
         self.runner.recover_interrupted()
         self.media_store = MediaStore(outputs)
         self.media_runner = media_runner_factory(self.media_store) if media_runner_factory else MediaRunner(self.media_store)
+        self.media_runner.parallel_limit = lambda: self.settings_store.read_env().get("TRANSCRIBE_PARALLEL") or 1
         self.media_runner.recover_interrupted()
         self.last_ping = time.time()
         self.allowed_hosts: set = set()
@@ -95,6 +100,7 @@ def _project_view(state: AppState, project: Project, full: bool = False) -> Dict
         "error": project.error, "notice": project.notice, "source_kind": project.source_kind,
         "source_name": project.source_name, "options": project.options,
         "files": sorted(state.store.files(project)),
+        "drive_uploading": state.delivery.is_uploading(project.id),
     }
     dialogue = state.store.read_json(state.store.run_paths(project).dialogue_path)
     if dialogue:
@@ -174,9 +180,20 @@ def create_app(root: Path, runner_factory=None, media_runner_factory=None) -> Fa
     # -------------------------------------------------------------- pages
 
     @app.get("/", response_class=HTMLResponse)
-    def index() -> str:
+    def index(request: Request) -> Response:
+        # Google sends the sign-in back to this page (the loopback address of an installed app)
+        params = request.query_params
+        if params.get("state") and state.delivery.drive.is_pending(params["state"]):
+            if params.get("error"):
+                state.delivery.drive.cancel(params["state"])
+                return RedirectResponse(f"/#/settings?drive_error={quote('ההתחברות ל-Google בוטלה')}", status_code=303)
+            try:
+                state.delivery.drive.finish(params.get("code", ""), params["state"])
+            except DeliveryError as exc:
+                return RedirectResponse(f"/#/settings?drive_error={quote(str(exc))}", status_code=303)
+            return RedirectResponse("/#/settings?drive=connected", status_code=303)
         html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
-        return html.replace("__MBS_TOKEN__", state.token)
+        return HTMLResponse(html.replace("__MBS_TOKEN__", state.token))
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -459,6 +476,99 @@ def create_app(root: Path, runner_factory=None, media_runner_factory=None) -> Fa
 
     register_media_routes(app, state, _options)
 
+    # -------------------------------------------------------------- output folders & Google Drive
+
+    def _local(request: Request) -> bool:
+        return not state.access_key and (request.client.host if request.client else "") in {"127.0.0.1", "::1", "localhost", "testclient"}
+
+    def _require_local(request: Request) -> None:
+        if not _local(request):
+            raise HTTPException(403, "זמין רק במחשב שעליו האפליקציה רצה")
+
+    def _delivery_view(request: Request) -> Dict[str, Any]:
+        return {"prefs": state.delivery.prefs.get(), "drive": state.delivery.drive.status(),
+                "default_root": str(state.delivery.prefs.default_root()), "local": _local(request)}
+
+    @app.get("/api/delivery")
+    def delivery_get(request: Request) -> Dict[str, Any]:
+        return _delivery_view(request)
+
+    @app.put("/api/delivery")
+    async def delivery_put(request: Request) -> Dict[str, Any]:
+        body = await request.json()
+        changes = {k: body[k] for k in ("drive_auto", "drive_folder", "output_root") if k in body}
+        if str(changes.get("output_root") or "").strip():
+            _require_local(request)
+            try:
+                changes["output_root"] = str(resolve_save_folder(changes["output_root"]))
+            except ChainError as exc:
+                raise HTTPException(400, str(exc))
+        if changes.get("drive_auto") and not state.delivery.drive.status()["connected"]:
+            raise HTTPException(409, "קודם צריך להתחבר ל-Google Drive")
+        state.delivery.prefs.update(changes)
+        return _delivery_view(request)
+
+    @app.post("/api/delivery/pick-folder")
+    async def delivery_pick(request: Request) -> Dict[str, Any]:
+        _require_local(request)
+        try:
+            chosen = await asyncio.get_running_loop().run_in_executor(None, pick_folder, state.delivery.prefs.get()["output_root"])
+        except ChainError as exc:
+            raise HTTPException(501, str(exc))
+        return {"folder": chosen or ""}
+
+    @app.post("/api/delivery/google/client")
+    async def delivery_client(request: Request) -> Dict[str, Any]:
+        _require_local(request)
+        try:
+            state.delivery.drive.save_client(await request.body())
+        except DeliveryError as exc:
+            raise HTTPException(400, str(exc))
+        return _delivery_view(request)
+
+    @app.post("/api/delivery/google/connect")
+    def delivery_connect(request: Request) -> Dict[str, Any]:
+        """The Google sign-in address; Google returns to this app's own page on this computer."""
+        _require_local(request)
+        port = request.url.port or 80
+        try:
+            return {"url": state.delivery.drive.auth_url(f"http://127.0.0.1:{port}/")}
+        except DeliveryError as exc:
+            raise HTTPException(400, str(exc))
+
+    @app.post("/api/delivery/google/disconnect")
+    def delivery_disconnect(request: Request) -> Dict[str, Any]:
+        state.delivery.prefs.update({"drive_auto": False})
+        state.delivery.drive.disconnect()
+        return _delivery_view(request)
+
+    @app.post("/api/projects/{project_id}/deliver")
+    async def project_deliver(project_id: str, request: Request) -> Dict[str, Any]:
+        """Build (or refresh) the podcast's folder now, and upload it to Drive if asked."""
+        project = _get(project_id)
+        if project.running:
+            raise HTTPException(409, "אפשר אחרי שהתהליך הנוכחי מסתיים")
+        body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
+        upload = bool(body.get("upload"))
+        if upload and not state.delivery.drive.status()["connected"]:
+            raise HTTPException(409, "Google Drive לא מחובר. התחבר בהגדרות.")
+        folder = await run_in_threadpool(state.runner.deliver, project.id, upload)
+        if folder is None:
+            raise HTTPException(409, "לא הצלחתי לבנות את תיקיית הפרק. הפרטים ביומן הפרויקט.")
+        return _project_view(state, state.store.get(project.id))
+
+    @app.post("/api/projects/{project_id}/reveal")
+    def project_reveal(project_id: str, request: Request) -> Dict[str, Any]:
+        _require_local(request)
+        folder = _get(project_id).options.get("output_folder")
+        if not folder or not Path(folder).exists():
+            raise HTTPException(404, "עוד אין תיקייה לפרק הזה")
+        try:
+            reveal(Path(folder))
+        except ChainError as exc:
+            raise HTTPException(501, str(exc))
+        return {"ok": True}
+
     @app.post("/api/projects/upload")
     async def upload(request: Request) -> Dict[str, Any]:
         params = dict(request.query_params)
@@ -591,5 +701,33 @@ def create_app(root: Path, runner_factory=None, media_runner_factory=None) -> Fa
         if download:
             return FileResponse(path, filename=f"{project.title}{path.suffix}")
         return FileResponse(path)
+
+    @app.get("/api/projects/{project_id}/summary")
+    def get_summary(project_id: str, format: str = "html", download: int = 0, print: int = 0) -> Response:
+        """The lesson summary, built from the lesson analysis: html (designed page), md or docx."""
+        from .summary import FORMATS as SUMMARY_FORMATS, SummaryError, project_summary, render_html, render_markdown, write_docx
+
+        project = _get(project_id)
+        if format not in SUMMARY_FORMATS:
+            raise HTTPException(400, "פורמט לא נתמך")
+        try:
+            model = project_summary(state.store, project)
+        except SummaryError as exc:
+            raise HTTPException(404, str(exc))
+        accent = ACCENTS.get(state.brand.prefs().get("accent", "teal"), ACCENTS["teal"])
+        media_type, suffix = SUMMARY_FORMATS[format]
+        name = quote(f"{project.title} - סיכום{suffix}")
+        headers = {"Content-Disposition": f"{'attachment' if download else 'inline'}; filename*=UTF-8''{name}"}
+        if format == "html":
+            page = render_html(model, accent)
+            if print:  # "PDF": open the print dialog with every answer shown; the user saves as PDF
+                page = page.replace("</body>", "<script>addEventListener('load',()=>{document.querySelectorAll('details')"
+                                               ".forEach(d=>d.open=true);setTimeout(()=>window.print(),300)})</script></body>")
+            return Response(page, media_type=media_type, headers=headers)
+        if format == "md":
+            return Response(render_markdown(model), media_type=media_type, headers=headers)
+        target = state.store.folder(project) / "summary.docx"
+        write_docx(model, target, accent)
+        return FileResponse(target, media_type=media_type, headers=headers)
 
     return app

@@ -99,6 +99,29 @@ def test_download_errors_are_explained_and_cancel_works(tmp_path):
         download(DownloadRequest("https://youtu.be/x", tmp_path), cancel=cancel, ydl_factory=FakeYDL)
 
 
+def test_embed_only_vimeo_retries_from_the_cookies_site(tmp_path):
+    embed_error = ("ERROR: [vimeo] 1: Cannot download embed-only video without embedding URL. "
+                   "Please call yt-dlp with the URL of the page that embeds this video.")
+    tried = []
+
+    class EmbedOnly(FakeYDL):
+        def download(self, urls):
+            referer = self.options.get("http_headers", {}).get("Referer")
+            tried.append(referer)
+            if referer != "https://johnbryce.sylla.academy/":
+                raise RuntimeError(embed_error)
+            super().download(urls)
+
+    cookies = tmp_path / "cookies.txt"
+    cookies.write_text(COOKIES, encoding="utf-8")
+    url = "https://player.vimeo.com/video/1?title=0"
+    files = download(DownloadRequest(url, tmp_path / "out", cookies=cookies), ydl_factory=EmbedOnly)
+    assert files and tried == [None, "https://johnbryce.sylla.academy/"]  # most specific domain first
+
+    with pytest.raises(DownloadError, match="Referer"):  # no cookies: explain what to do
+        download(DownloadRequest(url, tmp_path / "out2"), ydl_factory=EmbedOnly)
+
+
 def test_cookies_are_parsed_without_keeping_values():
     info = parse_cookies(COOKIES)
     assert info.count == 2 and info.domains == ["johnbryce.sylla.academy", "sylla.academy"]

@@ -73,6 +73,10 @@ FIELDS: List[EnvField] = [
     EnvField("PODCAST_FORMAT", "פורמט ברירת מחדל", "podcast", help="formats",
              choices=("auto", "deep_dive", "beginner_explainer", "exam_prep", "story", "debate", "brief", "critique")),
     EnvField("PODCAST_TARGET_MINUTES", "אורך פרק בדקות (0 = אוטומטי)", "podcast", help="settings", placeholder="0"),
+    EnvField("TRANSCRIBE_QUALITY", "איכות תמלול (ברירת מחדל)", "transcribe", help="transcriber",
+             choices=("balanced", "fast", "accurate")),
+    EnvField("TRANSCRIBE_PARALLEL", "כמה תמלולים רצים במקביל", "transcribe", help="transcriber",
+             choices=("1", "2", "3", "4")),
 ]
 FIELDS_BY_KEY = {f.key: f for f in FIELDS}
 
