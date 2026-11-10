@@ -86,6 +86,10 @@ class AppState:
         self.runner.brand = self.brand
         self.delivery = Delivery(Path(outputs) / "private")
         self.runner.delivery = self.delivery
+        from .credits import CreditsLedger
+
+        self.credits = CreditsLedger(Path(outputs) / "private")
+        self.runner.credits = self.credits
         self.runner.recover_interrupted()
         self.media_store = MediaStore(outputs)
         self.media_runner = media_runner_factory(self.media_store) if media_runner_factory else MediaRunner(self.media_store)
@@ -329,11 +333,39 @@ def create_app(root: Path, runner_factory=None, media_runner_factory=None) -> Fa
         if voice == "elevenlabs":
             account = _voice_account()
             result["voice"]["account"] = account
+            # eleven_v3 / eleven_v4 bill one credit per character
+            result["voice"]["credits"] = result["voice"]["characters"]
             if account:
                 left = account["characters_left"]
-                result["voice"]["enough"] = left >= result["voice"]["characters"]
-                result["voice"]["max_minutes"] = round(left / max(1, result["voice"]["characters"]) * minutes, 1)
+                result["voice"]["enough"] = left >= result["voice"]["credits"]
+                result["voice"]["max_minutes"] = round(left / max(1, result["voice"]["credits"]) * minutes, 1)
+        # Google: the episode's Gemini part in shekels, against the balance the user entered
+        ledger = state.credits.view()
+        rate = ledger["usd_rate"]
+        gemini_script = writer == "gemini"
+        google_low = (result["script"]["low"] if gemini_script else 0) + (result["voice"]["cost"] if voice == "gemini" else 0) + result["images"]["cost"]
+        google_high = (result["script"]["high"] if gemini_script else 0) + (result["voice"]["cost"] if voice == "gemini" else 0) + result["images"]["cost"]
+        result["google"] = {"low": round(google_low * rate, 2), "high": round(google_high * rate, 2), "usd_rate": rate,
+                            "balance": ledger["balance"], "left": ledger["left"],
+                            "enough": None if ledger["left"] is None else ledger["left"] >= google_high * rate}
         return result
+
+    @app.get("/api/credits")
+    def credits_view() -> Dict[str, Any]:
+        """What is left to spend: ElevenLabs credits (live) and the Google balance (from the ledger)."""
+        _account_cache.clear()
+        return {"elevenlabs": _voice_account(), "google": state.credits.view()}
+
+    @app.put("/api/credits")
+    async def credits_set(request: Request) -> Dict[str, Any]:
+        body = await request.json()
+        try:
+            balance = float(body.get("google_balance"))
+            rate = float(body["usd_rate"]) if body.get("usd_rate") not in (None, "") else None
+            state.credits.set_google_balance(balance, rate)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(400, str(exc) if str(exc) else "ערך לא תקין")
+        return {"elevenlabs": _voice_account(), "google": state.credits.view()}
 
     @app.get("/api/estimate")
     def estimate(words: int = 0, minutes: float = 0, voice: str = "", language: str = "he", images: int = 0) -> Dict[str, Any]:

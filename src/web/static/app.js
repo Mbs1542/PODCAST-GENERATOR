@@ -916,6 +916,40 @@ function choiceCards(kind, options, selected) {
       <b>${esc(title)}</b><span>${esc(text)}</span></button>`).join("");
 }
 
+/* Settings card: what is left to spend. ElevenLabs reports its credits; Google's prepaid balance is
+   entered here and the app subtracts what each job actually spent. */
+async function paintCreditsSettings() {
+  const box = document.getElementById("credits-settings");
+  if (!box) return;
+  let view;
+  try { view = await api("/credits"); } catch (_) { box.innerHTML = ""; return; }
+  const { elevenlabs: el, google: g } = view;
+  const reset = el && el.resets_at ? new Date(el.resets_at * 1000).toLocaleDateString("he-IL") : "";
+  box.innerHTML = `<div class="card stack">
+    <div><h2>קרדיטים ויתרות</h2><div class="help">כמה נשאר לפני שמתחילים פרק. הערכת העלות של כל פרק מראה כמה ממנו הפרק ייקח.</div></div>
+    <div class="cost-rows">
+      <div><span>ElevenLabs (קולות)</span><b>${el ? `${num(el.characters_left)} קרדיטים מתוך ${num(el.characters_limit)} · מנוי ${esc(el.tier)}${reset ? ` · מתחדש ב-${esc(reset)}` : ""}` : "אין מפתח ElevenLabs, או שאין חיבור"}</b></div>
+      <div><span>Google (Gemini): יתרה משוערת</span><b>${g.left === null ? "לא הוזנה יתרה" : `<bdi dir="ltr">${ils(g.left)}</bdi> מתוך <bdi dir="ltr">${ils(g.balance)}</bdi>`}</b></div>
+      ${g.balance !== null ? `<div><span>נוצל מאז שהוזנה היתרה (לפי האפליקציה)</span><b><bdi dir="ltr">${ils(g.spent)}</bdi> (<bdi dir="ltr">${usd(g.spent_usd)}</bdi>)</b></div>` : ""}
+    </div>
+    <div class="form-group">
+      <label class="field"><span>יתרה שטענת ב-Google (₪)</span><input type="number" id="g-balance" min="0" step="0.01" class="ltr" value="${g.left !== null ? g.left : ""}" placeholder="למשל 60"></label>
+      <label class="field"><span>שער דולר (מחירי Gemini בדולרים)</span><input type="number" id="g-rate" min="0.5" max="20" step="0.01" class="ltr" value="${g.usd_rate}"></label>
+    </div>
+    <div class="row"><button class="btn" id="g-balance-save">שמור יתרה</button>
+      <span class="help" style="margin:0">Google לא חושפת את היתרה למפתח, לכן האפליקציה מחשבת לבד: היתרה שהזנת פחות מה שכל עבודה צרכה בפועל.
+        לבדיקה מול Google: aistudio.google.com, תחת Billing. אחרי טעינה נוספת, מזינים את היתרה החדשה.</span></div>
+  </div>`;
+  document.getElementById("g-balance-save").onclick = async () => {
+    try {
+      await api("/credits", { method: "PUT", body: { google_balance: document.getElementById("g-balance").value,
+        usd_rate: document.getElementById("g-rate").value } });
+      toast("היתרה נשמרה");
+      paintCreditsSettings();
+    } catch (err) { toast(err.message, true); }
+  };
+}
+
 /* Settings card: where each podcast's folder goes, and the Google Drive connection. */
 async function paintDeliverySettings() {
   const box = document.getElementById("delivery-settings");
@@ -1030,10 +1064,12 @@ async function viewSettings() {
         <button class="btn lg" id="test">בדוק חיבור</button>
       </div>
       <div id="test-results" class="test-results"></div>
+      <div id="credits-settings"></div>
       <div id="delivery-settings" class="stack"></div>
     </div>
     <audio id="voice-player" hidden></audio>`);
   paintDeliverySettings();
+  paintCreditsSettings();
 
   const player = document.getElementById("voice-player");
   const play = (src, button) => {
@@ -1410,6 +1446,8 @@ function confirmTranscribe(item, languageOptions, allItems = [], qualityOptions 
 
 const VOICE_NAMES = { elevenlabs: "ElevenLabs", gemini: "Gemini", azure: "Azure Speech" };
 const usd = (n) => "$" + Number(n).toFixed(2);
+const ils = (n) => "₪" + Number(n).toFixed(2);
+const num = (n) => Number(n).toLocaleString("he-IL");
 
 /* The episode's likely cost and, for ElevenLabs, whether the plan has the characters: shown before an
    episode is created and again on the plan, before the script is written. */
@@ -1417,19 +1455,28 @@ function costHtml(e) {
   if (!e) return `<div class="muted">הערכת העלות תופיע אחרי עדכון האפליקציה.</div>`;
   const v = e.voice;
   const account = v.account;
-  let voiceLine = `${esc(VOICE_NAMES[v.provider] || v.provider)}: כ-${v.characters.toLocaleString("he-IL")} תווים`;
+  let voiceLine = `${esc(VOICE_NAMES[v.provider] || v.provider)}: כ-${num(v.credits || v.characters)} ${v.provider === "elevenlabs" ? "קרדיטים (קרדיט לכל תו)" : "תווים"}`;
   if (v.provider === "gemini") voiceLine = `Gemini: כ-${Math.round(e.target_minutes)} דקות שמע · ${usd(v.cost)}`;
   else if (v.provider === "azure") voiceLine += ` · ${usd(v.cost)}`;
-  else voiceLine += ` · ${usd(v.cost)} לפי מחיר ה-API (במנוי: נספר מהתווים של המנוי)`;
+  else voiceLine += ` · ${usd(v.cost)} לפי מחיר ה-API (במנוי: יורד מהקרדיטים)`;
   const quota = v.provider === "elevenlabs" && account ? (v.enough
-    ? `<div class="help" style="margin:0">במנוי ElevenLabs שלך (${esc(account.tier)}) נשארו ${account.characters_left.toLocaleString("he-IL")} תווים: מספיק.</div>`
-    : `<div class="banner warn"><p><b>לא מספיק תווים ב-ElevenLabs:</b> הפרק צריך כ-${v.characters.toLocaleString("he-IL")}, ונשארו ${account.characters_left.toLocaleString("he-IL")} (${esc(account.tier)}).
+    ? `<div class="help" style="margin:0">במנוי ElevenLabs שלך (${esc(account.tier)}) נשארו ${num(account.characters_left)} קרדיטים מתוך ${num(account.characters_limit)}: מספיק, ואחרי הפרק יישארו כ-${num(account.characters_left - (v.credits || v.characters))}.</div>`
+    : `<div class="banner warn"><p><b>לא מספיק קרדיטים ב-ElevenLabs:</b> הפרק צריך כ-${num(v.credits || v.characters)}, ונשארו ${num(account.characters_left)} (${esc(account.tier)}).
         מספיק לפרק של עד כ-${v.max_minutes} דקות. אפשר לקצר, לשדרג את המנוי או לבחור בקולות של Gemini.</p></div>`) : "";
+  const g = e.google;
+  let googleLine = "";
+  if (g && g.high > 0) {
+    const range = `<bdi dir="ltr">${ils(g.low)}–${ils(g.high)}</bdi>`;
+    googleLine = g.left === null
+      ? `<div><span>מהקרדיט ב-Google (Gemini)</span><b>${range} <a href="#/settings" class="small">הזן יתרה כדי לראות כמה נשאר</a></b></div>`
+      : `<div><span>מהקרדיט ב-Google (Gemini)</span><b>${range} מתוך יתרה של <bdi dir="ltr">${ils(g.left)}</bdi>${g.enough === false ? " · <span style=\"color:var(--bad)\">לא מספיק</span>" : ""}</b></div>`;
+  }
   const writer = e.script.writer === "local" ? "מודל מקומי" : e.script.writer === "azure" ? "Azure OpenAI" : "Gemini";
   return `<div><h2>הערכת עלות</h2><div class="help">הערכה לפי אורך השיעור והפרק. העלות בפועל נמדדת בזמן העבודה ומופיעה ביומן.</div></div>
     <div class="cost-rows">
       <div><span>כתיבת התסריט (${esc(writer)})</span><b>${e.script.writer === "local" ? "חינם" : `<bdi dir="ltr">${usd(e.script.low)}–${usd(e.script.high)}</bdi>`}</b></div>
       <div><span>קולות</span><b>${voiceLine}</b></div>
+      ${googleLine}
       <div class="total"><span>סה"כ משוער</span><b><bdi dir="ltr">${usd(e.total.low)}–${usd(e.total.high)}</bdi></b></div>
     </div>${quota}
     <p class="help" style="margin:0">תמונות לווידאו לא כלולות (כ-0.07 דולר לתמונה). המחירים של Gemini מוכפלים מ-1/1/2027.</p>`;

@@ -105,6 +105,7 @@ class JobRunner:
         self.settings_store = settings_store
         self.brand: Any = None  # set by the app: logo, fonts and accent for the video
         self.delivery: Any = None  # set by the app: the podcast's own folder and Google Drive
+        self.credits: Any = None   # set by the app: the Google credit ledger
         self._llms_factory = llms_factory
         self._tts_factory = tts_factory
         self._dialogue_factory = dialogue_factory
@@ -227,10 +228,13 @@ class JobRunner:
         settings = apply_project_options(settings, project.options)
         costs = CostTracker()
         self._stage(project_id, "מנתח את השיעור ובונה תוכנית לפרק")
-        self._engine(project_id, settings, costs).run(
-            self._transcript_text(project), self._hints(project), self.store.engine_dir(project),
-            force=force, stop_after="plan",
-        )
+        try:
+            self._engine(project_id, settings, costs).run(
+                self._transcript_text(project), self._hints(project), self.store.engine_dir(project),
+                force=force, stop_after="plan",
+            )
+        finally:
+            self._record_spend(project_id, costs, "ניתוח ותוכנית")
         self.store.append_log(project_id, f"עלות עד כאן: ${costs.openai_cost:.3f}")
         self.store.update(project_id, status="plan_ready")
 
@@ -276,9 +280,12 @@ class JobRunner:
             (engine_dir / "04_script.json").unlink(missing_ok=True)
         costs = CostTracker()
         self._stage(project_id, "כותב את התסריט")
-        result = self._engine(project_id, settings, costs).run(
-            self._transcript_text(project), self._hints(project), engine_dir
-        )
+        try:
+            result = self._engine(project_id, settings, costs).run(
+                self._transcript_text(project), self._hints(project), engine_dir
+            )
+        finally:
+            self._record_spend(project_id, costs, "כתיבת התסריט")
         paths = self.store.run_paths(project)
         paths.dialogue_path.write_text(json.dumps(result.dialogue, ensure_ascii=False, indent=2), encoding="utf-8")
         # A new script makes earlier per-line audio stale (conversation chunks are keyed by content)
@@ -334,9 +341,23 @@ class JobRunner:
         self._write_chapters(project, paths, [lead_in + s for s in starts])
         if costs.tts_cost:
             self.store.append_log(project_id, f"עלות הקולות: ${costs.tts_cost:.2f} (חלקים שכבר הוקלטו לא נספרים שוב)")
+        self._record_spend(project_id, costs, "קולות")
         self.store.append_log(project_id, f"הפרק מוכן ({provider}).")
         self.store.update(project_id, status="audio_ready")
         self.deliver(project_id)
+
+    def _record_spend(self, project_id: str, costs: CostTracker, what: str) -> None:
+        """Keep the Google credit balance current with what this job really used (never fails the job)."""
+        if self.credits is None:
+            return
+        try:
+            from .credits import google_spend_usd
+
+            usd = google_spend_usd(costs)
+            if usd:
+                self.credits.record("google", usd, project_id, what)
+        except Exception:
+            self.logger.exception("Could not record spend for %s", project_id)
 
     def deliver(self, project_id: str, upload: Optional[bool] = None) -> Optional[Path]:
         """The lesson summary, then the podcast's own folder (lecture, transcripts, podcast, video, summary),
@@ -491,6 +512,8 @@ class JobRunner:
         from ..utils.pricing import gemini_image_cost
 
         self.store.append_log(project_id, f"נוספו לגלריה {made} תמונות (עלות: ${gemini_image_cost(made):.2f})")
+        if self.credits is not None and made:
+            self.credits.record("google", gemini_image_cost(made), project_id, "תמונות")
 
     def _run_video(self, project_id: str, force: bool) -> None:
         from ..video import SlideStyle, VideoError, render_video
