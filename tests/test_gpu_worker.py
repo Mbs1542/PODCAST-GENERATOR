@@ -146,4 +146,6 @@ def test_the_worker_refuses_unknown_models_and_missing_tokens(worker):
     assert requests.post(f"{url}/transcribe?model=evil/repo", data=b"abc", headers=auth).status_code == 400
     assert requests.post(f"{url}/transcribe?model=large-v3&language=fr", data=b"abc", headers=auth).status_code == 400
     assert requests.get(f"{url}/health").json()["ok"] is True
+    metrics = requests.get(f"{url}/metrics").text
+    assert "podcast_gpu_worker_busy 0" in metrics and "podcast_gpu_worker_jobs_total" in metrics
     assert calls == []

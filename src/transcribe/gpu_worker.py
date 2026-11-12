@@ -53,7 +53,7 @@ HEARTBEAT_SECONDS = 5.0
 IDLE_UNLOAD_SECONDS = 600  # give the GPU memory back when nobody has transcribed for 10 minutes
 
 _GPU = threading.Lock()  # one transcription at a time: the GPU is shared with Ollama
-_state = {"busy": False, "loaded": None, "last_used": 0.0}
+_state = {"busy": False, "loaded": None, "last_used": 0.0, "jobs": 0, "failures": 0, "audio_seconds": 0.0}
 
 
 def _log(message: str) -> None:
@@ -147,8 +147,28 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.flush()
 
     def do_GET(self):
-        if urlparse(self.path).path == "/health":
+        path = urlparse(self.path).path
+        if path == "/health":
             return self._json(200, {"ok": True, "busy": _state["busy"], "loaded": _state["loaded"]})
+        if path == "/metrics":  # Prometheus text format, no client library
+            body = (
+                "# TYPE podcast_gpu_worker_busy gauge\n"
+                f"podcast_gpu_worker_busy {int(_state['busy'])}\n"
+                "# TYPE podcast_gpu_worker_model_loaded gauge\n"
+                f"podcast_gpu_worker_model_loaded {int(bool(_state['loaded']))}\n"
+                "# TYPE podcast_gpu_worker_jobs_total counter\n"
+                f"podcast_gpu_worker_jobs_total {_state['jobs']}\n"
+                "# TYPE podcast_gpu_worker_failures_total counter\n"
+                f"podcast_gpu_worker_failures_total {_state['failures']}\n"
+                "# TYPE podcast_gpu_worker_audio_seconds_total counter\n"
+                f"podcast_gpu_worker_audio_seconds_total {_state['audio_seconds']:.1f}\n"
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; version=0.0.4")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return None
         return self._json(404, {"detail": "not found"})
 
     def do_POST(self):
@@ -218,12 +238,15 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             raise
         except Exception as exc:
+            _state["failures"] += 1
             _log(f"failed: {exc!r}")
             self._line({"type": "error", "message": str(exc)[:500]})
             return
         segments = [[round(s["start"], 2), round(s["end"], 2), s["text"].strip()]
                     for s in out.get("segments", []) if s.get("text", "").strip()]
         seconds = time.monotonic() - started
+        _state["jobs"] += 1
+        _state["audio_seconds"] += duration[0]
         _log(f"done: {len(segments)} segments in {seconds:.1f}s")
         self._line({"type": "result", "segments": segments, "duration": duration[0], "seconds": round(seconds, 1)})
 
