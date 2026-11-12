@@ -27,3 +27,4 @@ studio.env
 
 # macOS folder metadata
 .DS_Store
+.venv-*/

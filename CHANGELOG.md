@@ -2,6 +2,15 @@
 
 Every release passes the release gate first (`python -m scripts.gate`); the version lives in `src/version.py`.
 
+## [3.6.0] - 2026-11-12
+
+- Transcription on a Mac's GPU from the container: `src/transcribe/gpu_worker.py` runs natively on Apple
+  Silicon (mlx-whisper, the same ivrit.ai weights converted to MLX) and the app sends it the audio when
+  `MBS_GPU_URL` and `MBS_GPU_TOKEN` are set. Measured on an M1 Ultra, 10 minutes of Hebrew: 12-14 s against
+  about 90 s on 6 CPU threads, same word error rate. If the worker does not answer, the CPU path runs as before.
+- `MBS_EXTERNAL_AUTH=cloudflare-access`: behind a reverse proxy that verifies a Cloudflare Access login, the
+  app needs no password of its own and refuses any request that did not come through that gate.
+
 ## [3.5.2] - 2026-11-12
 
 - Release gate: a live check that real links still download the way the app downloads them (saved cookies, retry from the embedding site), without downloading.

@@ -51,6 +51,7 @@ APP_ID = "mbs-studio"
 SESSION_COOKIE = "mbs_session"
 SESSION_DAYS = 30
 PUBLIC_PATHS = {"/login", "/logo", "/api/hello"}
+CF_ACCESS_HEADER = "cf-access-jwt-assertion"
 MAX_FAILED_LOGINS = 5
 LOGIN_WINDOW_SECONDS = 300
 
@@ -111,6 +112,9 @@ class AppState:
         # Network mode (a container or server reached from a phone over a VPN): an access key
         # guards the page itself, because the per-launch API token is embedded in that page
         self.access_key: str = ""
+        # Or: a reverse proxy verifies the login (MBS_EXTERNAL_AUTH=cloudflare-access) and every
+        # request except the public paths must arrive with the header it verified
+        self.external_auth: str = ""
         self.sessions: set = set()
         self.failed_logins: Dict[str, list] = {}
 
@@ -188,6 +192,11 @@ def create_app(root: Path, runner_factory=None, media_runner_factory=None) -> Fa
         if state.allowed_hosts and host not in state.allowed_hosts:
             return PlainTextResponse("Forbidden host", status_code=403)
         path = request.url.path
+        # Behind Cloudflare Access, Traefik has checked this JWT's signature and audience; a request
+        # without it did not come through that gate (another container calling the port directly)
+        if (state.external_auth == "cloudflare-access" and path not in PUBLIC_PATHS
+                and not request.headers.get(CF_ACCESS_HEADER)):
+            return PlainTextResponse("Sign in through Cloudflare Access", status_code=403)
         if state.access_key and not _signed_in(request) and path not in PUBLIC_PATHS and not path.startswith("/static/"):
             if path.startswith("/api/"):
                 return JSONResponse({"detail": "sign in first"}, status_code=401)
