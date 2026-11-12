@@ -122,3 +122,16 @@ def test_node_ids_match_pytest(tmp_path):
     (tmp_path / "tests" / "test_x.py").write_text("", encoding="utf-8")
     assert g.node_id(tmp_path, "tests.test_x.TestA", "test_b") == "tests/test_x.py::TestA::test_b"
     assert g.node_id(tmp_path, "tests.test_x", "test_c[p]") == "tests/test_x.py::test_c[p]"
+
+
+def test_javascript_check_really_reads_each_file(tmp_path):
+    """Model reviewers have claimed that jsc's checkSyntax(path) parses the path string instead of the file;
+    this runs the real checker on a broken and a valid file to settle it (skipped where jsc is absent)."""
+    import pytest
+
+    if not Path(g.JSC).exists():
+        pytest.skip("JavaScriptCore is not available on this machine")
+    (tmp_path / "bad.js").write_text("var a = ;\n", encoding="utf-8")
+    (tmp_path / "good.js").write_text("var a = 1;\n", encoding="utf-8")
+    findings = g.stage_syntax(tmp_path, ["bad.js", "good.js"]).findings
+    assert [(f.file, f.line, f.rule) for f in findings] == [("bad.js", 1, "SYN2")]

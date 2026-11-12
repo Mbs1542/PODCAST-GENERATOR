@@ -96,7 +96,7 @@ def repo_files(root: Path) -> List[str]:
     """Tracked files plus new files that are not ignored: what the next commit would contain."""
     code, out = _run(["git", "-c", "core.quotepath=off", "ls-files", "--cached", "--others", "--exclude-standard"], root)
     if code != 0:
-        return sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file() and ".git" not in p.parts)
+        return sorted(p.relative_to(root).as_posix() for p in root.rglob("*") if p.is_file() and ".git" not in p.parts)
     return sorted({line for line in out.splitlines() if line and (root / line).is_file()})
 
 

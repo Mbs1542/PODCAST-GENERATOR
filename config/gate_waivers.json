@@ -1,0 +1,10 @@
+{
+  "waivers": [
+    {
+      "rule": "REV:correctness",
+      "file": "src/release/gate.py",
+      "contains": "checkSyntax",
+      "reason": "Disproved by test: jsc's checkSyntax(path) reads the file at that path; tests/test_gate.py::test_javascript_check_really_reads_each_file runs the real checker and catches a broken file at line 1."
+    }
+  ]
+}
