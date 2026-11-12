@@ -14,6 +14,9 @@ Stages, in order (each one adds findings; critical and high findings block unles
                (or every file with --full): numbered lines go in, findings come back with the exact line quoted.
                A finding whose quote is not found at that line is marked unverified and never blocks.
   6. eval      the exam-quality evaluation set (scripts/exam_eval.py): the latest run must not have regressed.
+  7. links     real links still download, checked the way the app downloads them (saved cookies, the retry from the
+               embedding site for Vimeo) without downloading: one URL per line in <outputs>/gate/links.txt (kept on
+               this machine, since course links are private). A link that stopped working blocks.
 
 The report (Markdown and JSON) is written to <outputs>/gate/. With --tag, a passing gate tags the commit v<version>.
 """
@@ -610,6 +613,41 @@ def stage_eval(history_path: Path, version: str) -> StageResult:
     if last.get("app_version") != version:
         stage.findings.append(Finding("eval", "low", "EVAL2", f"The latest evaluation ran on {last.get('app_version') or '?'}, not {version}",
                                       fix="python -m scripts.exam_eval --yes"))
+    return stage
+
+
+# --------------------------------------------------------------------------- 7. live links
+
+def read_links(path: Path) -> List[str]:
+    return [line.strip() for line in (_text(path) or "").splitlines()
+            if line.strip().startswith("http") and not line.strip().startswith("#")]
+
+
+def stage_links(links_path: Path, cookie_dir: Path, probe: Optional[Callable[..., Dict[str, Any]]] = None) -> StageResult:
+    stage = StageResult("links")
+    links = read_links(links_path)
+    if not links:
+        stage.notes.append(f"no links to check (add one URL per line to {links_path})")
+        return stage
+    if probe is None:
+        from ..media.downloader import probe
+    cookies = sorted(cookie_dir.glob("*.txt")) if cookie_dir.exists() else []
+    ok = 0
+    for url in links:
+        short = url.split("?")[0][:90]
+        try:
+            result = probe(url, cookies)
+        except Exception as exc:  # the probe itself failed (no network, missing package): report, never crash the gate
+            result = {"ok": False, "error": f"{exc.__class__.__name__}: {exc}"}
+        if result.get("ok"):
+            ok += 1
+            via = f"cookies {result['cookies']}" if result.get("cookies") else "no cookies"
+            via += f", embedded on {result['referer']}" if result.get("referer") else ""
+            stage.notes.append(f"OK {short}: {result.get('title', '')[:60]} ({result.get('minutes', 0)} min; {via})")
+        else:
+            stage.findings.append(Finding("links", "high", "LNK1", f"The link no longer downloads: {result.get('error', '')[:300]}",
+                                          short, fix="Refresh the site's cookies in Tools, or check the link in the browser."))
+    stage.notes.insert(0, f"{ok} of {len(links)} links download")
     return stage
 
 

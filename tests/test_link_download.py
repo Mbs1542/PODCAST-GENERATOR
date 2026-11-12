@@ -65,3 +65,54 @@ def test_project_link_uses_saved_cookies_and_moves_on_when_one_site_fails(tmp_pa
     with pytest.raises(JobError, match="מוטמע"):
         JobRunner._download_link(runner, project, tmp_path / "src2")
     assert tried == [None]
+
+
+class _FakeYDL:
+    """yt-dlp stand-in: an embed-only Vimeo video plays only with the college site as the embedding page."""
+
+    seen: list = []
+
+    def __init__(self, options):
+        self.options = options
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def extract_info(self, url, download=True):
+        assert download is False and self.options["skip_download"]
+        referer = self.options.get("http_headers", {}).get("Referer", "")
+        _FakeYDL.seen.append((Path(self.options["cookiefile"]).stem if self.options.get("cookiefile") else None, referer))
+        if "vimeo" in url and referer != "https://yedion.pac.ac.il/":
+            raise Exception("ERROR: [vimeo] 1: Cannot download embed-only video without embedding URL.")
+        return {"title": "מבוא למדע הנתונים", "duration": 7380}
+
+
+def test_probe_checks_a_link_like_the_app_without_downloading(tmp_path):
+    folder = tmp_path / "cookies"
+    files = [_cookies(folder, "college", "yedion.pac.ac.il"), _cookies(folder, "other", "example.org")]
+    _FakeYDL.seen = []
+    result = downloader.probe("https://player.vimeo.com/video/1?title=0", files, ydl_factory=_FakeYDL)
+    assert result == {"ok": True, "title": "מבוא למדע הנתונים", "minutes": 123, "cookies": "college",
+                      "referer": "https://yedion.pac.ac.il/", "error": ""}
+    assert _FakeYDL.seen == [("college", ""), ("college", "https://yedion.pac.ac.il/")]  # plain first, then as embedded
+    failed = downloader.probe("https://player.vimeo.com/video/1", [files[1]], ydl_factory=_FakeYDL)
+    assert not failed["ok"] and "מוטמע" in failed["error"]  # the Hebrew explanation, not yt-dlp's text
+
+
+def test_gate_links_stage_blocks_a_link_that_stopped_downloading(tmp_path):
+    from src.release import gate as g
+
+    links = tmp_path / "links.txt"
+    assert g.stage_links(links, tmp_path).findings == []  # nothing configured: nothing to check
+    links.write_text("# course lessons\nhttps://player.vimeo.com/video/1?title=0\nhttps://example.com/gone\n", encoding="utf-8")
+    answers = {"https://player.vimeo.com/video/1?title=0": {"ok": True, "title": "שיעור", "minutes": 123, "cookies": "college",
+                                                            "referer": "https://yedion.pac.ac.il/"},
+               "https://example.com/gone": {"ok": False, "error": "הסרטון לא נמצא בכתובת הזו (404)."}}
+    stage = g.stage_links(links, tmp_path, probe=lambda url, cookies: answers[url])
+    assert stage.notes[0] == "1 of 2 links download" and "embedded on https://yedion.pac.ac.il/" in stage.notes[1]
+    assert [(f.rule, f.blocks, f.file) for f in stage.findings] == [("LNK1", True, "https://example.com/gone")]
+    crashed = g.stage_links(links, tmp_path, probe=lambda url, cookies: 1 / 0)
+    assert len(crashed.findings) == 2 and "ZeroDivisionError" in crashed.findings[0].message  # reported, not a crash

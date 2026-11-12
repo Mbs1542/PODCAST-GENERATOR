@@ -2,6 +2,10 @@
 
 Every release passes the release gate first (`python -m scripts.gate`); the version lives in `src/version.py`.
 
+## [3.5.2] - 2026-11-12
+
+- Release gate: a live check that real links still download the way the app downloads them (saved cookies, retry from the embedding site), without downloading.
+
 ## [3.5.1] - 2026-11-12
 
 - New project from a link downloads like the Tools downloader: the site's saved cookies are used, and a Vimeo video that plays only inside a course site (embed-only) is fetched as embedded there. Errors are shown in Hebrew.

@@ -9,6 +9,7 @@ on (no --no-check-certificate) and no yt-dlp.exe/ffmpeg.exe binaries are carried
 from __future__ import annotations
 
 import shutil
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field
@@ -301,6 +302,42 @@ def download(
         raise DownloadError("לא נמצא סרטון להורדה בכתובת הזו.")
     progress(1.0, "הסתיים")
     return written
+
+
+def probe(url: str, cookie_files: Sequence[Path], ydl_factory: Optional[Callable[[Dict[str, Any]], Any]] = None,
+          log: Optional[Callable[[str], None]] = None) -> Dict[str, Any]:
+    """Check, without downloading, that a link downloads the way the app downloads it: the same options, the
+    same saved cookies (cookies_for) and the same retry from the embedding site. For the release gate.
+
+    Returns {"ok", "title", "minutes", "cookies", "referer", "error"}.
+    """
+    log = log or (lambda _m: None)
+    if ydl_factory is None:
+        from yt_dlp import YoutubeDL
+
+        ydl_factory = YoutubeDL
+    profile = site_profile(url)
+    error = "לא נמצא סרטון בכתובת הזו."
+    with tempfile.TemporaryDirectory() as tmp:
+        for cookies in cookies_for(url, cookie_files):
+            request = DownloadRequest(url=url, folder=Path(tmp), quality="audio", subtitles=False, cookies=cookies)
+            options = {**build_options(request, profile, log), "skip_download": True, "logger": _Logger(log)}
+            referers = _embed_referers(request, profile)
+            used = options.get("http_headers", {}).get("Referer", "")
+            while True:
+                try:
+                    with ydl_factory(options) as ydl:
+                        info = ydl.extract_info(url, download=False) or {}
+                    return {"ok": True, "title": str(info.get("title") or ""), "minutes": round((info.get("duration") or 0) / 60),
+                            "cookies": cookies.stem if cookies else "", "referer": used, "error": ""}
+                except Exception as exc:  # yt-dlp reports every failure as an exception with the site's message
+                    if referers and _is_embed_only(str(exc)):
+                        used = referers.pop(0)
+                        options["http_headers"] = {**options.get("http_headers", {}), "Referer": used}
+                        continue
+                    error = friendly_error(str(exc))
+                    break
+    return {"ok": False, "title": "", "minutes": 0, "cookies": "", "referer": "", "error": error}
 
 
 # --------------------------------------------------------------------------- cookies

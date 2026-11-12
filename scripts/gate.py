@@ -6,6 +6,7 @@
     python -m scripts.gate --bump patch       # raise the version (patch|minor|major) and open a CHANGELOG entry, then gate
     python -m scripts.gate --tag              # on a pass, tag the commit v<version>
     python -m scripts.gate --budget 2         # most the expert review may spend, in USD (default 1)
+    python -m scripts.gate --skip-links       # without the live check of real links (offline)
 
 What each stage checks is described in src/release/gate.py. Waivers (a finding accepted with a reason) go in
 config/gate_waivers.json; legacy test failures that are known and tracked go in config/gate_known_failures.txt.
@@ -39,6 +40,7 @@ def main() -> int:
     parser.add_argument("--full", action="store_true", help="review every source file, not only the changed ones")
     parser.add_argument("--skip-review", action="store_true")
     parser.add_argument("--skip-tests", action="store_true")
+    parser.add_argument("--skip-links", action="store_true", help="do not check the real links (no network)")
     parser.add_argument("--bump", choices=("patch", "minor", "major"))
     parser.add_argument("--note", default="", help="the CHANGELOG line for --bump")
     parser.add_argument("--tag", action="store_true", help="tag the commit v<version> when the gate passes")
@@ -100,6 +102,10 @@ def main() -> int:
 
                 CreditsLedger(outputs / "private").record("google", google_spend_usd(costs), f"gate:v{version}", "בדיקת גרסה")
     stages.append(say(g.timed(lambda: g.stage_eval(outputs / "exam_eval" / "history.jsonl", version))))
+    if args.skip_links:
+        stages.append(g.StageResult("links", status="skipped", notes=["skipped (--skip-links)"]))
+    else:
+        stages.append(say(g.timed(lambda: g.stage_links(outputs / "gate" / "links.txt", outputs / "private" / "cookies"))))
 
     g.apply_waivers([f for s in stages for f in s.findings], g.load_waivers(ROOT))
     passed = g.finish(stages)
