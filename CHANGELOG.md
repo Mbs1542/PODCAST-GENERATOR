@@ -2,6 +2,10 @@
 
 Every release passes the release gate first (`python -m scripts.gate`); the version lives in `src/version.py`.
 
+## [3.5.1] - 2026-11-12
+
+- New project from a link downloads like the Tools downloader: the site's saved cookies are used, and a Vimeo video that plays only inside a course site (embed-only) is fetched as embedded there. Errors are shown in Hebrew.
+
 ## [3.5.0] - 2026-11-10
 
 - Exam mode: exams from one or more analysed lessons, multiple-choice and open questions, difficulty and language

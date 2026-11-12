@@ -13,7 +13,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence
 from urllib.parse import urlparse
 
 QUALITIES: Dict[str, Dict[str, str]] = {
@@ -181,6 +181,25 @@ def _embed_referers(request: DownloadRequest, profile: SiteProfile) -> List[str]
         return []
     hosts = {d.lstrip(".").lower() for d in domains if d and "vimeo" not in d.lower()}
     return [f"https://{host}/" for host in sorted(hosts, key=lambda h: (-h.count("."), h))]
+
+
+def cookies_for(url: str, cookie_files: Sequence[Path]) -> List[Optional[Path]]:
+    """Saved cookie files worth trying for a link, best first, ending with no cookies at all.
+
+    The site's own cookies come first. A Vimeo link plays only inside the site that embeds it, which is the
+    site the user exported cookies from, so for Vimeo every saved file is a candidate (each one also gives
+    the embedding page to retry from, see _embed_referers).
+    """
+    host = (urlparse(url).hostname or "").lower()
+    matching, others = [], []
+    for path in cookie_files:
+        try:
+            domains = {d.lstrip(".").lower() for d in parse_cookies(Path(path).read_text(encoding="utf-8", errors="replace")).domains}
+        except (OSError, DownloadError):
+            continue
+        (matching if any(host == d or host.endswith("." + d) for d in domains) else others).append(Path(path))
+    vimeo = site_profile(url).name == "vimeo"
+    return [*matching, *(others if vimeo else []), None]
 
 
 def friendly_error(message: str) -> str:

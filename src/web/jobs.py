@@ -24,7 +24,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from ..audio.dialogue_tts import DIALOGUE_PROVIDERS, DialogueTTSError, build_dialogue_synth, render_dialogue
 from ..engine import ScriptEngine
-from ..transcribe import HebrewTranscriber, TranscribeError, download_url, model_for_language, normalize_quality, to_srt, to_text
+from ..transcribe import HebrewTranscriber, TranscribeError, model_for_language, normalize_quality, to_srt, to_text
 from ..utils import CostTracker, Settings, VoiceProfileManager, get_logger
 from ..utils.keep_awake import keep_awake
 from .projects import Project, ProjectStore
@@ -238,11 +238,37 @@ class JobRunner:
         self.store.append_log(project_id, f"עלות עד כאן: ${costs.openai_cost:.3f}")
         self.store.update(project_id, status="plan_ready")
 
+    def _download_link(self, project: Project, folder: Path) -> Path:
+        """The lecture's audio from a link, with the same downloader as Tools: the saved cookies of the site are
+        used, and a Vimeo video that plays only inside a course site is fetched as embedded there."""
+        from ..media.downloader import DownloadError, DownloadRequest, cookies_for, download
+
+        cookie_dir = self.store.root.parent / "private" / "cookies"
+        candidates = cookies_for(project.source_name, sorted(cookie_dir.glob("*.txt")) if cookie_dir.exists() else [])
+        last_error = "לא נמצא סרטון להורדה בכתובת הזו."
+        def progress(fraction: float, label: str) -> None:
+            self.store.update(project.id, stage="מוריד את ההקלטה", progress=fraction)
+
+        for cookies in candidates:
+            if cookies is not None:
+                self.store.append_log(project.id, f"מנסה עם העוגיות השמורות: {cookies.stem}")
+            request = DownloadRequest(url=project.source_name, folder=folder, quality="audio", subtitles=False, cookies=cookies)
+            try:
+                files = download(request, progress=progress, log=lambda line: self.store.append_log(project.id, line))
+            except DownloadError as exc:
+                last_error = str(exc)
+                self.store.append_log(project.id, f"ההורדה נכשלה: {last_error}")
+                continue
+            media = [f for f in files if f.suffix.lower() not in (".vtt", ".srt", ".json", ".jpg", ".png", ".webp")]
+            if media:
+                return media[0]
+        raise JobError(last_error)
+
     def _transcribe(self, project: Project) -> None:
         source_dir = self.store.source_dir(project)
         if project.source_kind == "url":
             self._stage(project.id, "מוריד את ההקלטה")
-            media = download_url(project.source_name, source_dir)
+            media = self._download_link(project, source_dir)
         else:
             files = [p for p in source_dir.iterdir() if p.is_file()]
             if not files:
