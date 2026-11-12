@@ -127,6 +127,16 @@ def test_without_the_environment_the_worker_is_never_tried(monkeypatch, tmp_path
     assert fell_back
 
 
+def test_the_token_comes_from_a_plain_file_or_an_env_file(tmp_path):
+    plain, env, other = tmp_path / "plain", tmp_path / "studio.env", tmp_path / "other.env"
+    plain.write_text(TOKEN + "\n")
+    env.write_text(f"MBS_EXTERNAL_AUTH=cloudflare-access\nMBS_GPU_TOKEN='{TOKEN}'\n")
+    other.write_text("SOMETHING_ELSE=value\n")
+    assert gpu_worker.read_token(plain) == TOKEN
+    assert gpu_worker.read_token(env) == TOKEN
+    assert gpu_worker.read_token(other) == ""  # an env file without the token is not a token
+
+
 def test_the_worker_refuses_unknown_models_and_missing_tokens(worker):
     import requests
 

@@ -239,13 +239,23 @@ def _probe_seconds(audio: Path) -> float:
         return 0.0
 
 
+def read_token(path: Path) -> str:
+    """The container's env file can be the one place the token lives: MBS_GPU_TOKEN=... is read from it."""
+    text = path.read_text(encoding="utf-8")
+    for line in text.splitlines():
+        if line.strip().startswith("MBS_GPU_TOKEN="):
+            return line.split("=", 1)[1].strip().strip("\"'")
+    return "" if "=" in text else text.strip()
+
+
 def main(argv: Optional[list] = None) -> None:
     parser = argparse.ArgumentParser(description="ivrit.ai Whisper on the Mac's GPU (MLX)")
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8766)
-    parser.add_argument("--token-file", required=True, help="file whose only content is the shared token")
+    parser.add_argument("--token-file", required=True,
+                        help="the shared token: a file holding only the token, or an env file with MBS_GPU_TOKEN=...")
     args = parser.parse_args(argv)
-    token = Path(args.token_file).read_text(encoding="utf-8").strip()
+    token = read_token(Path(args.token_file))
     if len(token) < 24:
         sys.exit("the token must be at least 24 characters")
     if sys.platform != "darwin":
