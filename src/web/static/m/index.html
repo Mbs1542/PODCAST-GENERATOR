@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="mbs-token" content="__MBS_TOKEN__">
+<meta name="mbs-version" content="__MBS_VERSION__">
+<meta name="theme-color" content="#0b1119">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Studio">
+<title>M.B.S Studio</title>
+<!-- Behind Cloudflare Access the manifest needs the sign-in cookie -->
+<link rel="manifest" href="/m/manifest.webmanifest" crossorigin="use-credentials">
+<link rel="apple-touch-icon" href="/static/m/apple-touch-icon.png">
+<link rel="icon" href="/static/m/icon-192.png">
+<script>
+  // The saved theme and accent before the first paint, so the page never flashes the wrong colors
+  try {
+    var look = JSON.parse(localStorage.getItem("mbs-m-look") || "{}"), root = document.documentElement;
+    var theme = look.theme && look.theme !== "auto" ? look.theme : (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+    root.dataset.theme = theme;
+    root.dataset.accent = look.accent || "teal";
+  } catch (e) { document.documentElement.dataset.theme = "dark"; }
+</script>
+<link rel="stylesheet" href="/static/m/m.css?v=__MBS_VERSION__">
+</head>
+<body>
+<header class="top">
+  <a href="#/" class="brand"><span class="brand-mark" aria-hidden="true">🎙</span><span class="brand-name">M.B.S Studio</span></a>
+  <span class="net" id="net" hidden>בלי חיבור</span>
+  <button class="look-btn" id="look-btn" type="button" aria-label="עיצוב: ערכת נושא וצבע">🎨</button>
+</header>
+<main id="app" aria-live="polite"></main>
+
+<div class="mini" id="mini" hidden>
+  <a class="art mini-art" id="mini-art" href="#/" aria-hidden="true" tabindex="-1">🎧</a>
+  <button class="mini-play" id="mini-play" type="button" aria-label="נגן"></button>
+  <a class="mini-title" id="mini-title" href="#/"></a>
+  <div class="mini-bar"><div id="mini-fill"></div></div>
+</div>
+
+<nav class="tabbar" aria-label="ניווט">
+  <a href="#/" data-tab="podcasts"><span aria-hidden="true">🎧</span>פודקאסטים</a>
+  <a href="#/tx" data-tab="tx"><span aria-hidden="true">📝</span>תמלולים</a>
+  <a href="#/new" data-tab="new"><span aria-hidden="true">＋</span>חדש</a>
+  <a href="#/saved" data-tab="saved"><span aria-hidden="true">⬇</span>שמורים</a>
+</nav>
+
+<audio id="audio" preload="metadata" playsinline></audio>
+<div id="toast" class="toast" role="status" hidden></div>
+<script src="/static/m/m.js?v=__MBS_VERSION__"></script>
+</body>
+</html>

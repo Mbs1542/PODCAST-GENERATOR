@@ -2,6 +2,25 @@
 
 Every release passes the release gate first (`python -m scripts.gate`); the version lives in `src/version.py`.
 
+## [3.7.1] - 2026-11-13
+
+- Phone app: themes (auto, dark, black, light) and six accents, a color per podcast, an equalizer while playing; iOS 26 home-screen bottom gap fixed
+
+## [3.7.0] - 2026-11-13
+
+- A phone app at `/m/`, installable to the home screen (PWA), on the same server and API as the desktop page:
+  - Podcasts: a player with play and skip from the lock screen (Media Session), speed (0.8×–2×), chapters,
+    the line being spoken, and a resume point per episode. Opening another episode does not interrupt the one
+    playing until its own play button is pressed.
+  - Offline: "Save" keeps the episode's audio, summary and transcript on the phone (Cache API). A service
+    worker serves them with Range requests, so a saved episode plays and seeks with no connection, and the
+    app opens to what is saved.
+  - Reading: the summary drawn for a small screen (`/api/projects/<id>/summary?format=json`, new), the
+    podcast script that follows the audio, and the lecture transcript with in-text search and a text size.
+  - New: a file from the phone, a recording made in the app, or a link, either as a transcription only (the
+    Tools queue) or as a full podcast. Files over 100 MB are refused up front (Cloudflare's per-request cap).
+  - Downloads: MP3, summary as PDF or Word, transcript, script.
+
 ## [3.6.0] - 2026-11-12
 
 - Transcription on a Mac's GPU from the container: `src/transcribe/gpu_worker.py` runs natively on Apple

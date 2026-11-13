@@ -68,6 +68,7 @@ def _login_page(message: str = "") -> str:
 {note}<button class="btn primary lg" type="submit">כניסה</button></form>
 <p class="help">הסיסמה מוגדרת בהפעלת השרת (MBS_ACCESS_KEY).</p></div></main></body></html>"""
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+MOBILE_DIR = STATIC_DIR / "m"
 TRANSCRIPT_EXTENSIONS = {".txt", ".srt", ".vtt", ".md"}
 MAX_TITLE = 80
 _SAFE_NAME_RE = re.compile(r"[^\w֐-׿ .()\-]+")
@@ -226,6 +227,27 @@ def create_app(root: Path, runner_factory=None, media_runner_factory=None) -> Fa
             return RedirectResponse("/#/settings?drive=connected", status_code=303)
         html = (STATIC_DIR / "index.html").read_text(encoding="utf-8")
         return HTMLResponse(html.replace("__MBS_TOKEN__", state.token).replace("__MBS_VERSION__", __version__))
+
+    # -------------------------------------------------------------- the phone app (an installable PWA)
+
+    @app.get("/m", include_in_schema=False)
+    def mobile_redirect() -> Response:
+        return RedirectResponse("/m/", status_code=308)
+
+    @app.get("/m/", response_class=HTMLResponse)
+    def mobile_index() -> Response:
+        html = (MOBILE_DIR / "index.html").read_text(encoding="utf-8")
+        return HTMLResponse(html.replace("__MBS_TOKEN__", state.token).replace("__MBS_VERSION__", __version__))
+
+    @app.get("/m/sw.js")
+    def mobile_worker() -> Response:
+        # Served from /m/ so its scope is the phone app only; the version names its caches
+        script = (MOBILE_DIR / "sw.js").read_text(encoding="utf-8").replace("__MBS_VERSION__", __version__)
+        return Response(script, media_type="text/javascript; charset=utf-8")
+
+    @app.get("/m/manifest.webmanifest")
+    def mobile_manifest() -> Response:
+        return Response((MOBILE_DIR / "manifest.webmanifest").read_bytes(), media_type="application/manifest+json")
 
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
@@ -871,12 +893,14 @@ def create_app(root: Path, runner_factory=None, media_runner_factory=None) -> Fa
         from .summary import FORMATS as SUMMARY_FORMATS, SummaryError, project_summary, render_html, render_markdown, write_docx
 
         project = _get(project_id)
-        if format not in SUMMARY_FORMATS:
+        if format not in SUMMARY_FORMATS and format != "json":
             raise HTTPException(400, "פורמט לא נתמך")
         try:
             model = project_summary(state.store, project)
         except SummaryError as exc:
             raise HTTPException(404, str(exc))
+        if format == "json":  # the phone app draws the summary itself and keeps it for offline reading
+            return JSONResponse(model)
         accent = ACCENTS.get(state.brand.prefs().get("accent", "teal"), ACCENTS["teal"])
         media_type, suffix = SUMMARY_FORMATS[format]
         name = quote(f"{project.title} - סיכום{suffix}")
