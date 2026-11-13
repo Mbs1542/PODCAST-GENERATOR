@@ -174,6 +174,89 @@ def download_url(url: str, folder: Path) -> Path:
         raise TranscribeError(f"Could not download {url}: {exc}") from exc
 
 
+# The Mac's GPU, through src/transcribe/gpu_worker.py running natively next to the container.
+# Docker Desktop on a Mac cannot reach the GPU, so the container hands the audio to the worker.
+GPU_URL_ENV = "MBS_GPU_URL"  # e.g. http://host.docker.internal:8766
+GPU_TOKEN_ENV = "MBS_GPU_TOKEN"
+GPU_MODELS = {"ivrit-ai/whisper-large-v3-turbo-ct2", "ivrit-ai/whisper-large-v3-ct2", "large-v3-turbo", "large-v3"}
+
+
+class _WorkerUnavailable(RuntimeError):
+    """The GPU worker could not do this transcription; the CPU path takes over."""
+
+
+def _gpu_worker() -> Optional[Tuple[str, str]]:
+    url = os.environ.get(GPU_URL_ENV, "").strip().rstrip("/")
+    token = os.environ.get(GPU_TOKEN_ENV, "").strip()
+    return (url, token) if url and token else None
+
+
+def _extract_audio(media_path: Path, target: Path) -> None:
+    """16 kHz mono FLAC: what Whisper hears anyway, and a fraction of a video's size."""
+    import subprocess
+
+    try:
+        done = subprocess.run(
+            ["ffmpeg", "-nostdin", "-v", "error", "-y", "-i", str(media_path), "-vn", "-ac", "1", "-ar", "16000",
+             "-c:a", "flac", str(target)],
+            capture_output=True, text=True, timeout=3600,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise _WorkerUnavailable(f"ffmpeg could not extract the audio: {exc}") from exc
+    if done.returncode != 0 or not target.exists() or target.stat().st_size == 0:
+        raise _WorkerUnavailable(f"ffmpeg could not extract the audio: {done.stderr.strip()[-300:]}")
+
+
+def _transcribe_on_worker(
+    media_path: Path, model: str, language: str, url: str, token: str, log: Log,
+    progress: Optional[Callable[[float, float], None]],
+) -> List[TranscriptSegment]:
+    import json
+    import tempfile
+
+    import requests
+
+    try:
+        requests.get(f"{url}/health", timeout=3).raise_for_status()
+    except requests.RequestException as exc:
+        raise _WorkerUnavailable(f"the GPU worker does not answer: {exc}") from exc
+    with tempfile.TemporaryDirectory(prefix="mbs-audio-") as tmp:
+        audio = Path(tmp) / "audio.flac"
+        _extract_audio(media_path, audio)
+        log(f"Transcribing on the Mac's GPU ({model}, {audio.stat().st_size / 1e6:.0f} MB of audio)...")
+        try:
+            with audio.open("rb") as body, requests.post(
+                f"{url}/transcribe", params={"model": model, "language": language}, data=body,
+                headers={"Authorization": f"Bearer {token}", "Content-Type": "audio/flac"},
+                stream=True, timeout=(5, 300),  # the worker writes a line at least every 5 s
+            ) as response:
+                if response.status_code != 200:
+                    raise _WorkerUnavailable(f"the GPU worker refused: HTTP {response.status_code} {response.text[:200]}")
+                said_queued = False
+                for raw in response.iter_lines():
+                    if not raw:
+                        continue
+                    event = json.loads(raw)
+                    kind = event.get("type")
+                    if kind == "queued" and not said_queued:
+                        said_queued = True
+                        log("Waiting for the GPU (another transcription is running)...")
+                    elif kind == "progress" and progress:
+                        progress(float(event.get("position", 0)), float(event.get("duration", 0)))
+                    elif kind == "error":
+                        raise _WorkerUnavailable(f"the GPU worker failed: {event.get('message', '')}")
+                    elif kind == "result":
+                        segments = [TranscriptSegment(float(s), float(e), t) for s, e, t in event["segments"] if t]
+                        duration = float(event.get("duration") or 0)
+                        if progress and duration:
+                            progress(duration, duration)
+                        log(f"GPU transcription took {event.get('seconds', 0):.0f} s for {duration / 60:.1f} min of audio.")
+                        return segments
+        except (requests.RequestException, ValueError, KeyError) as exc:
+            raise _WorkerUnavailable(f"the GPU worker connection failed: {exc}") from exc
+    raise _WorkerUnavailable("the GPU worker ended without a result")
+
+
 def _cuda_available() -> bool:
     try:
         import ctranslate2
@@ -215,6 +298,12 @@ class HebrewTranscriber:
         media_path: Path,
         progress: Optional[Callable[[float, float], None]] = None,
     ) -> List[TranscriptSegment]:
+        worker = _gpu_worker() if self.device == "auto" and self.model in GPU_MODELS else None
+        if worker:
+            try:
+                return _transcribe_on_worker(Path(media_path), self.model, self.language, *worker, self.log, progress)
+            except _WorkerUnavailable as exc:
+                self.log(f"The Mac's GPU is not available ({exc}); transcribing on the CPU instead (slower).")
         try:
             import faster_whisper  # noqa: F401
         except ImportError as exc:

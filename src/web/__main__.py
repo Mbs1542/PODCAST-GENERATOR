@@ -8,6 +8,9 @@ In a container or on a server (see docker-compose.yml):
     MBS_HOST=0.0.0.0 MBS_PORT=8765 python -m src.web --no-browser --stay
     MBS_ALLOWED_HOSTS=studio.lan,10.8.0.2   other names/addresses the app is opened by (phone over VPN)
     MBS_ACCESS_KEY=...                      required whenever MBS_ALLOWED_HOSTS names another device
+    MBS_EXTERNAL_AUTH=cloudflare-access     instead of the key: a reverse proxy in front of the app
+                                            verifies a Cloudflare Access login (Traefik's JWT check);
+                                            the app then refuses any request without that header
 
 Started from the Start menu with pythonw (no console window), so the server stops by
 itself a few minutes after the last browser tab closes, unless a job is still running.
@@ -71,12 +74,18 @@ MIN_ACCESS_KEY_LENGTH = 12
 LOCAL_NAMES = {"127.0.0.1", "localhost", "[::1]"}
 
 
-def network_config(port: int, extra_hosts: str, access_key: str) -> tuple:
+EXTERNAL_AUTH_MODES = {"cloudflare-access"}
+
+
+def network_config(port: int, extra_hosts: str, access_key: str, external_auth: str = "") -> tuple:
     """The Host headers to accept and whether the setup is safe to start.
 
     Extra host names (a LAN name, a VPN address, a domain) make the app reachable from
-    other devices, so they require an access key. Returns (allowed_hosts, error or "").
+    other devices, so they require an access key, or a login that a proxy in front of the app
+    checks (external_auth). Returns (allowed_hosts, error or "").
     """
+    if external_auth and external_auth not in EXTERNAL_AUTH_MODES:
+        return set(), f"MBS_EXTERNAL_AUTH must be one of {', '.join(sorted(EXTERNAL_AUTH_MODES))}."
     allowed = {f"{name}:{port}" for name in LOCAL_NAMES}
     remote = []
     for entry in (h.strip() for h in extra_hosts.split(",")):
@@ -86,7 +95,7 @@ def network_config(port: int, extra_hosts: str, access_key: str) -> tuple:
         allowed |= {entry, f"{name}:{port}", name}
         if name not in LOCAL_NAMES:
             remote.append(entry)
-    if remote and len(access_key) < MIN_ACCESS_KEY_LENGTH:
+    if remote and len(access_key) < MIN_ACCESS_KEY_LENGTH and not external_auth:
         return allowed, (f"MBS_ALLOWED_HOSTS ({', '.join(remote)}) makes the app reachable from other devices; "
                          f"set MBS_ACCESS_KEY to a password of at least {MIN_ACCESS_KEY_LENGTH} characters.")
     return allowed, ""
@@ -114,7 +123,8 @@ def main() -> None:
     port = args.port or next(p for p in range(DEFAULT_PORT, DEFAULT_PORT + 40) if _port_free(p))
 
     access_key = os.environ.get("MBS_ACCESS_KEY", "")
-    allowed, error = network_config(port, os.environ.get("MBS_ALLOWED_HOSTS", ""), access_key)
+    external_auth = os.environ.get("MBS_EXTERNAL_AUTH", "").strip()
+    allowed, error = network_config(port, os.environ.get("MBS_ALLOWED_HOSTS", ""), access_key, external_auth)
     if error:
         print(f"M.B.S Studio will not start: {error}", file=sys.stderr, flush=True)
         sys.exit(2)
@@ -127,7 +137,8 @@ def main() -> None:
     state = app.state.mbs
     state.allowed_hosts = allowed
     state.access_key = access_key
-    if not local and not access_key:
+    state.external_auth = external_auth
+    if not local and not access_key and not external_auth:
         print("Note: listening on all interfaces without MBS_ACCESS_KEY. Publish the port on 127.0.0.1 only "
               "(the docker-compose default), or set MBS_ACCESS_KEY.", flush=True)
     server = uvicorn.Server(uvicorn.Config(app, host=args.host, port=port, log_level="warning",
