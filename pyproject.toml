@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "azure-podcast-generator"
-version = "3.7.0"
+version = "3.7.1"
 description = "Automated pipeline that converts Azure lectures into bilingual podcasts with visuals."
 authors = [{ name = "Azure Podcast Generator", email = "maorbensimon1542@gmail.com" }]
 requires-python = ">=3.9"

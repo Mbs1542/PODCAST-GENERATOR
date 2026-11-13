@@ -2,6 +2,10 @@
 
 Every release passes the release gate first (`python -m scripts.gate`); the version lives in `src/version.py`.
 
+## [3.7.1] - 2026-11-13
+
+- Phone app: themes (auto, dark, black, light) and six accents, a color per podcast, an equalizer while playing; iOS 26 home-screen bottom gap fixed
+
 ## [3.7.0] - 2026-11-13
 
 - A phone app at `/m/`, installable to the home screen (PWA), on the same server and API as the desktop page:
