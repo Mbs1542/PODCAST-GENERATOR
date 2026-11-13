@@ -1,0 +1,19 @@
+{
+  "name": "M.B.S Studio",
+  "short_name": "Studio",
+  "description": "הפודקאסטים, הסיכומים והתמלולים שלך, גם בלי אינטרנט",
+  "lang": "he",
+  "dir": "rtl",
+  "id": "/m/",
+  "start_url": "/m/",
+  "scope": "/m/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0f1720",
+  "theme_color": "#0f1720",
+  "icons": [
+    { "src": "/static/m/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/static/m/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/static/m/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
