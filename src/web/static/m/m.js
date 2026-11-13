@@ -313,8 +313,18 @@ function paintMini() {
   $("#mini-play").textContent = audio.paused ? "▶" : "❚❚";
   $("#mini-play").setAttribute("aria-label", audio.paused ? "נגן" : "השהה");
   $("#mini-title").textContent = player.title;
-  $("#mini-title").href = `#/p/${enc(player.id || "")}`;
+  $("#mini-title").href = $("#mini-art").href = `#/p/${enc(player.id || "")}`;
+  if (player.id) $("#mini-art").style.setProperty("--h", hue(player.id));
+  // The equalizer on the cover moves only while this page's own episode is the one playing
+  $$(".player").forEach((card) => card.classList.toggle("live", card.dataset.id === player.id && !audio.paused));
   if (player.onTick) player.onTick();
+}
+
+// A stable color per podcast or transcription, from its id
+function hue(id) {
+  let h = 0;
+  for (const ch of String(id)) h = (h * 31 + ch.codePointAt(0)) % 360;
+  return h;
 }
 $("#mini-play").onclick = () => (audio.paused ? audio.play() : audio.pause());
 
@@ -371,7 +381,7 @@ async function viewPodcasts() {
   const [{ projects }, index] = await Promise.all([api("/projects"), offIndex()]);
   const rows = projects.map((p) => `
     <a class="card item" href="#/p/${enc(p.id)}">
-      <div class="art" aria-hidden="true">${p.files.includes("audio") ? "🎧" : p.running ? "⏳" : "📄"}</div>
+      <div class="art" style="--h:${hue(p.id)}" aria-hidden="true">${p.files.includes("audio") ? "🎧" : p.running ? "⏳" : "📄"}</div>
       <div class="body">
         <div class="title"><bdi>${esc(p.title)}</bdi></div>
         <div class="meta row">${statusBadge(p)}${p.minutes ? `<span>${Math.round(p.minutes)} דק׳</span>` : ""}
@@ -415,7 +425,7 @@ async function viewEpisode(id, tab, offline = false) {
     <h1><bdi>${esc(p.title)}</bdi></h1>
     <div class="row muted small">${statusBadge(p)}<span>${esc(fmtDate(p.created))}</span>${p.minutes ? `<span>${Math.round(p.minutes)} דק׳</span>` : ""}</div>
     <div class="stack" style="margin-top:12px">
-      ${hasAudio ? playerCard() : ""}
+      ${hasAudio ? playerCard(p) : ""}
       ${!offline && (p.running || p.error || (next && !p.files.includes("audio"))) ? progressCard(p, next) : ""}
       ${!offline && p.files.includes("audio") ? saveCard(p, isSaved) : ""}
       ${tabs.length ? `<div class="tabs" role="tablist">${tabs.map(([k, label]) =>
@@ -504,9 +514,9 @@ function bindSave(p, script) {
   };
 }
 
-function playerCard() {
-  return `<div class="card player">
-    <div class="cover" aria-hidden="true">🎧</div>
+function playerCard(p) {
+  return `<div class="card player" data-id="${esc(p.id)}" style="--h:${hue(p.id)}">
+    <div class="cover" aria-hidden="true">🎧<div class="eq"><i></i><i></i><i></i><i></i></div></div>
     <input type="range" class="scrub" id="scrub" min="0" max="1000" value="0" aria-label="מיקום בפרק">
     <div class="times"><span id="t-now">0:00</span><span id="t-left">-0:00</span></div>
     <div class="controls">
@@ -750,7 +760,7 @@ async function viewTranscriptions() {
   const shown = items.filter((i) => i.kind === "transcription" || (i.kind === "download" && i.options?.transcribe && i.status !== "done"));
   const rows = shown.map((i) => `
     <a class="card item" href="#/t/${enc(i.id)}">
-      <div class="art" aria-hidden="true">${i.kind === "download" ? "⬇" : i.status === "done" ? "📝" : "⏳"}</div>
+      <div class="art" style="--h:${hue(i.id)}" aria-hidden="true">${i.kind === "download" ? "⬇" : i.status === "done" ? "📝" : "⏳"}</div>
       <div class="body"><div class="title"><bdi>${esc(i.title)}</bdi></div>
         <div class="meta row">${itemBadge(i)}<span>${esc(fmtDate(i.created))}</span>${index[`t:${i.id}`] ? `<span class="badge good">⬇ בטלפון</span>` : ""}</div>
         ${["running", "queued", "uploading"].includes(i.status) && i.progress != null ? `<div class="progress"><div style="width:${Math.round(i.progress * 100)}%"></div></div>` : ""}</div>
@@ -987,7 +997,7 @@ async function viewSaved(offline = false) {
     ${entries.length ? `<p class="muted small">${entries.length} פריטים · ${fmtSize(total)}${quota ? ` · ${quota}` : ""}</p>
       <div class="list">${entries.map((e) => `
         <div class="card item">
-          <a class="art" href="#/${e.kind}/${enc(e.id)}" aria-hidden="true">${e.kind === "p" ? "🎧" : "📝"}</a>
+          <a class="art" style="--h:${hue(e.id)}" href="#/${e.kind}/${enc(e.id)}" aria-hidden="true">${e.kind === "p" ? "🎧" : "📝"}</a>
           <a class="body" href="#/${e.kind}/${enc(e.id)}" style="color:var(--text)"><div class="title"><bdi>${esc(e.title)}</bdi></div>
             <div class="meta">${e.kind === "p" ? [e.audio && "פודקאסט", e.summary && "סיכום", e.transcript && "תמלול"].filter(Boolean).join(" · ") : "תמלול"} · ${fmtSize(e.size || 0)}</div></a>
           <button class="btn danger" data-del="${e.kind}:${esc(e.id)}" aria-label="הסר">✕</button>
@@ -1002,8 +1012,77 @@ async function viewSaved(offline = false) {
   });
 }
 
+// ------------------------------------------------------------------ look: theme and accent
+
+const THEMES = [["auto", "אוטומטי", "linear-gradient(135deg,#f3f5f9 50%,#0b1119 50%)"], ["dark", "כהה", "#141f2c"],
+  ["black", "שחור", "#000"], ["light", "בהיר", "#fff"]];
+const ACCENTS = [["teal", "טורקיז", "#2dd4bf", "#38bdf8"], ["blue", "כחול", "#60a5fa", "#818cf8"],
+  ["purple", "סגול", "#a78bfa", "#f472b6"], ["orange", "שקיעה", "#fb923c", "#f43f5e"],
+  ["rose", "ורוד", "#fb7185", "#c084fc"], ["gold", "זהב", "#fbbf24", "#fb923c"]];
+const lightQuery = matchMedia("(prefers-color-scheme: light)");
+
+function applyLook() {
+  const look = store.get("mbs-m-look", {});
+  const root = document.documentElement;
+  root.dataset.theme = look.theme && look.theme !== "auto" ? look.theme : (lightQuery.matches ? "light" : "dark");
+  root.dataset.accent = look.accent || "teal";
+  // The status bar and the app switcher take the page's background
+  $('meta[name="theme-color"]').content = getComputedStyle(root).getPropertyValue("--bg").trim() || "#0b1119";
+}
+lightQuery.addEventListener?.("change", applyLook);
+
+function openLook() {
+  const back = document.createElement("div");
+  back.className = "sheet-back";
+  const sheet = document.createElement("div");
+  sheet.className = "sheet";
+  sheet.setAttribute("role", "dialog");
+  sheet.setAttribute("aria-label", "עיצוב");
+  const paint = () => {
+    const cur = store.get("mbs-m-look", {});
+    sheet.innerHTML = `<h2>ערכת נושא</h2>
+      <div class="themes">${THEMES.map(([k, label, swatch]) => `<button type="button" data-theme-pick="${k}"
+        class="${(cur.theme || "auto") === k ? "on" : ""}"><i style="background:${swatch}"></i>${label}</button>`).join("")}</div>
+      <h2>צבע</h2>
+      <div class="swatches">${ACCENTS.map(([k, label, a, b]) => `<button type="button" data-accent-pick="${k}" aria-label="${label}"
+        class="${(cur.accent || "teal") === k ? "on" : ""}"><i style="background:linear-gradient(135deg,${a},${b})"></i></button>`).join("")}</div>`;
+    $$("[data-theme-pick]", sheet).forEach((b) => { b.onclick = () => { store.set("mbs-m-look", { ...store.get("mbs-m-look", {}), theme: b.dataset.themePick }); applyLook(); paint(); }; });
+    $$("[data-accent-pick]", sheet).forEach((b) => { b.onclick = () => { store.set("mbs-m-look", { ...store.get("mbs-m-look", {}), accent: b.dataset.accentPick }); applyLook(); paint(); }; });
+  };
+  paint();
+  const close = () => { back.remove(); sheet.remove(); };
+  back.onclick = close;
+  document.body.append(back, sheet);
+
+}
+$("#look-btn").onclick = openLook;
+
+// iOS 26 home-screen apps: the layout viewport can end above the screen's bottom edge, which leaves a
+// band under the fixed tab bar. Measure it and move the bottom bars down by that much.
+function fixIosGap() {
+  const standalone = navigator.standalone || matchMedia("(display-mode: standalone)").matches;
+  let gap = 0;
+  if (standalone) {
+    // Only when the page itself starts under the status bar (a top inset): then a viewport shorter than
+    // the screen can only mean it stops short at the bottom. Without that inset it may simply start lower.
+    const probe = document.createElement("div");
+    probe.style.cssText = "position:fixed;top:0;height:env(safe-area-inset-top,0px);visibility:hidden";
+    document.body.append(probe);
+    const topInset = probe.getBoundingClientRect().height;
+    probe.remove();
+    const screenH = innerHeight > innerWidth ? Math.max(screen.width, screen.height) : Math.min(screen.width, screen.height);
+    gap = Math.round(screenH - innerHeight);
+    if (topInset < 1 || gap < 0 || gap > 100) gap = 0;  // a keyboard, or anything unexpected: leave the layout alone
+  }
+  document.documentElement.style.setProperty("--ios-gap", `${gap}px`);
+}
+
 // ------------------------------------------------------------------ start
 
+applyLook();
+fixIosGap();
+addEventListener("resize", fixIosGap);
+addEventListener("orientationchange", () => setTimeout(fixIosGap, 300));
 document.documentElement.style.setProperty("--read-size", `${store.get("mbs-m-read", 17)}px`);
 window.addEventListener("online", () => { setOnline(true); route(); });
 window.addEventListener("offline", () => setOnline(false));
